@@ -17,13 +17,14 @@ const (
 )
 
 type User struct {
-	ID        string
-	Name      string
-	Email     string
-	Role      Role
-	PushToken string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Email        string    `json:"email"`
+	Role         Role      `json:"role"`
+	PushToken    string    `json:"-"`
+	PasswordHash string    `json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type Repository interface {

@@ -3,17 +3,17 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
 	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 	"github.com/mbalmaceda/sports-hub-backend/internal/db"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
 	"github.com/mbalmaceda/sports-hub-backend/internal/notification/expo"
+	"github.com/mbalmaceda/sports-hub-backend/internal/repository/postgres"
 )
 
 func main() {
@@ -35,19 +35,38 @@ func main() {
 	defer pool.Close()
 	slog.Info("database connected")
 
+	// Repositories
+	userRepo := postgres.NewUserRepository(pool)
+	tokenRepo := postgres.NewRefreshTokenRepository(pool)
+
+	// Notifier
 	notifier := expo.New()
-	_ = notifier // injected into handlers as notification.Notifier
+	_ = notifier
 
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
+	// Handlers
+	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, cfg.JWTSecret)
 
-	r.Get("/health", handler.Health)
+	// Router
+	r := gin.New()
+	r.Use(gin.Logger())
+	r.Use(gin.Recovery())
+
+	r.GET("/health", handler.Health)
+
+	r.POST("/auth/register", authHandler.Register)
+	r.POST("/auth/login", authHandler.Login)
+	r.POST("/auth/refresh", authHandler.Refresh)
+	r.POST("/auth/logout", authHandler.Logout)
+
+	// Rutas protegidas — requieren JWT válido
+	protected := r.Group("/")
+	protected.Use(auth.Middleware(cfg.JWTSecret))
+	{
+		// próximos handlers van acá
+	}
 
 	slog.Info("server starting", "port", cfg.Port)
-	if err := http.ListenAndServe(":"+cfg.Port, r); err != nil {
+	if err := r.Run(":" + cfg.Port); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
