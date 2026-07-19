@@ -38,6 +38,8 @@ func main() {
 	// Repositories
 	userRepo := postgres.NewUserRepository(pool)
 	tokenRepo := postgres.NewRefreshTokenRepository(pool)
+	teamRepo := postgres.NewTeamRepository(pool)
+	rosterRepo := postgres.NewRosterRepository(pool)
 
 	// Notifier
 	notifier := expo.New()
@@ -45,6 +47,8 @@ func main() {
 
 	// Handlers
 	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, cfg.JWTSecret)
+	teamHandler := handler.NewTeamHandler(teamRepo)
+	rosterHandler := handler.NewRosterHandler(rosterRepo)
 
 	// Router
 	r := gin.New()
@@ -62,7 +66,15 @@ func main() {
 	protected := r.Group("/")
 	protected.Use(auth.Middleware(cfg.JWTSecret))
 	{
-		// próximos handlers van acá
+		protected.GET("/teams", teamHandler.List)
+		protected.POST("/teams", teamHandler.Create)
+		protected.GET("/teams/:id", teamHandler.GetByID)
+		protected.PATCH("/teams/:id/fee-config", teamHandler.UpdateFeeConfig)
+
+		protected.GET("/teams/:id/roster", rosterHandler.ListByTeam)
+		protected.POST("/teams/:id/roster", rosterHandler.AddMember)
+		protected.GET("/teams/:id/roster/:membershipId", rosterHandler.GetMember)
+		protected.PATCH("/teams/:id/roster/:membershipId/status", rosterHandler.UpdateStatus)
 	}
 
 	slog.Info("server starting", "port", cfg.Port)
