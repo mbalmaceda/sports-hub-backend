@@ -40,6 +40,8 @@ func main() {
 	tokenRepo := postgres.NewRefreshTokenRepository(pool)
 	teamRepo := postgres.NewTeamRepository(pool)
 	rosterRepo := postgres.NewRosterRepository(pool)
+	feeRepo := postgres.NewFeeRepository(pool)
+	paymentRepo := postgres.NewPaymentRepository(pool)
 
 	// Notifier
 	notifier := expo.New()
@@ -49,6 +51,8 @@ func main() {
 	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, cfg.JWTSecret)
 	teamHandler := handler.NewTeamHandler(teamRepo)
 	rosterHandler := handler.NewRosterHandler(rosterRepo)
+	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
+	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
 
 	// Router
 	r := gin.New()
@@ -75,6 +79,20 @@ func main() {
 		protected.POST("/teams/:id/roster", rosterHandler.AddMember)
 		protected.GET("/teams/:id/roster/:membershipId", rosterHandler.GetMember)
 		protected.PATCH("/teams/:id/roster/:membershipId/status", rosterHandler.UpdateStatus)
+
+		protected.GET("/teams/:id/fees", feeHandler.ListByTeamAndPeriod)
+		protected.POST("/teams/:id/generate-fees", feeHandler.Generate)
+		protected.GET("/teams/:id/payments", paymentHandler.ListByTeam)
+		protected.POST("/teams/:id/payments", paymentHandler.Record)
+
+		protected.GET("/memberships/:membershipId/fees", feeHandler.ListByMembership)
+
+		protected.GET("/fees/:id", feeHandler.GetByID)
+		protected.PATCH("/fees/:id/status", feeHandler.UpdateStatus)
+		protected.GET("/fees/:id/payment", paymentHandler.GetByObligationID)
+
+		protected.GET("/payments/:id", paymentHandler.GetByID)
+		protected.POST("/payments/:id/reverse", paymentHandler.Reverse)
 	}
 
 	slog.Info("server starting", "port", cfg.Port)
