@@ -392,6 +392,56 @@ Revierte un pago. Si tenía `obligation_id`, la cuota vuelve a `pending`.
 
 ---
 
+## User Profile 🔒
+
+### GET `/users/me`
+Retorna el perfil del usuario autenticado.
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "name": "Mirko Balmaceda",
+  "email": "mirko@test.com",
+  "phone": "+56912345678",
+  "avatar_url": "https://cdn.example.com/avatar.jpg",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+---
+
+### PATCH `/users/me`
+Actualización parcial del perfil. Campos omitidos o vacíos no sobreescriben el valor existente.
+
+**Body** _(todos opcionales)_
+```json
+{
+  "name": "Mirko B.",
+  "phone": "+56912345678",
+  "avatar_url": "https://cdn.example.com/avatar.jpg"
+}
+```
+
+**Response 200** — objeto User actualizado
+
+---
+
+### PUT `/users/me/push-token`
+Registra el token de Expo Push Notifications para este dispositivo. Llamar al iniciar la app o cuando el token cambia.
+
+**Body**
+```json
+{ "token": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]" }
+```
+
+**Response 200** `{ "status": "ok" }`
+
+---
+
 ## Próximos endpoints
 
-- `PUT /users/me/push-token` — registrar token para notificaciones push
+- `POST /teams/:id/notifications` — broadcast announcement a todos los miembros
+- `GET /users/me/notifications` — notificaciones recibidas
+- `PATCH /notifications/:id/read` — marcar como leída

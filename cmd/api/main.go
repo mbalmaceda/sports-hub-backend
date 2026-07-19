@@ -49,6 +49,7 @@ func main() {
 
 	// Handlers
 	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, cfg.JWTSecret)
+	userHandler := handler.NewUserHandler(userRepo)
 	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo)
 	rosterHandler := handler.NewRosterHandler(rosterRepo)
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
@@ -70,6 +71,10 @@ func main() {
 	protected := r.Group("/")
 	protected.Use(auth.Middleware(cfg.JWTSecret))
 	{
+		protected.GET("/users/me", userHandler.Me)
+		protected.PATCH("/users/me", userHandler.UpdateProfile)
+		protected.PUT("/users/me/push-token", userHandler.RegisterPushToken)
+
 		protected.GET("/me/memberships", rosterHandler.ListMine)
 
 		protected.GET("/teams", teamHandler.List)

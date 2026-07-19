@@ -19,13 +19,26 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, error) {
-	const q = `
-		SELECT id, name, email, COALESCE(push_token,''), password_hash, created_at, updated_at
-		FROM users WHERE id = $1`
+const userColumns = `
+	id, name, email,
+	COALESCE(phone,''), COALESCE(avatar_url,''),
+	COALESCE(push_token,''), password_hash,
+	created_at, updated_at`
+
+func scanUser(row pgx.Row) (*user.User, error) {
 	u := &user.User{}
-	err := r.pool.QueryRow(ctx, q, id).
-		Scan(&u.ID, &u.Name, &u.Email, &u.PushToken, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(
+		&u.ID, &u.Name, &u.Email,
+		&u.Phone, &u.AvatarURL,
+		&u.PushToken, &u.PasswordHash,
+		&u.CreatedAt, &u.UpdatedAt,
+	)
+	return u, err
+}
+
+func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, error) {
+	q := `SELECT` + userColumns + ` FROM users WHERE id = $1`
+	u, err := scanUser(r.pool.QueryRow(ctx, q, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, user.ErrNotFound
 	}
@@ -36,12 +49,8 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 }
 
 func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*user.User, error) {
-	const q = `
-		SELECT id, name, email, COALESCE(push_token,''), password_hash, created_at, updated_at
-		FROM users WHERE email = $1`
-	u := &user.User{}
-	err := r.pool.QueryRow(ctx, q, email).
-		Scan(&u.ID, &u.Name, &u.Email, &u.PushToken, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
+	q := `SELECT` + userColumns + ` FROM users WHERE email = $1`
+	u, err := scanUser(r.pool.QueryRow(ctx, q, email))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, user.ErrNotFound
 	}
@@ -60,6 +69,22 @@ func (r *UserRepository) Create(ctx context.Context, u *user.User) error {
 		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("user.Create: %w", err)
+	}
+	return nil
+}
+
+// UpdateProfile actualiza solo los campos enviados. Campos vacíos no sobreescriben el valor existente.
+func (r *UserRepository) UpdateProfile(ctx context.Context, userID string, upd user.ProfileUpdate) error {
+	const q = `
+		UPDATE users SET
+			name       = CASE WHEN $1 != '' THEN $1 ELSE name END,
+			phone      = CASE WHEN $2 != '' THEN $2 ELSE phone END,
+			avatar_url = CASE WHEN $3 != '' THEN $3 ELSE avatar_url END,
+			updated_at = NOW()
+		WHERE id = $4`
+	_, err := r.pool.Exec(ctx, q, upd.Name, upd.Phone, upd.AvatarURL, userID)
+	if err != nil {
+		return fmt.Errorf("user.UpdateProfile: %w", err)
 	}
 	return nil
 }

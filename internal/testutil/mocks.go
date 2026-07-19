@@ -38,6 +38,10 @@ func (m *MockUserRepo) Create(ctx context.Context, u *user.User) error {
 	return m.Called(ctx, u).Error(0)
 }
 
+func (m *MockUserRepo) UpdateProfile(ctx context.Context, userID string, upd user.ProfileUpdate) error {
+	return m.Called(ctx, userID, upd).Error(0)
+}
+
 func (m *MockUserRepo) UpdatePushToken(ctx context.Context, userID, token string) error {
 	return m.Called(ctx, userID, token).Error(0)
 }
