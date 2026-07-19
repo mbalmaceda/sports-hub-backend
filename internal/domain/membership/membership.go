@@ -16,10 +16,21 @@ const (
 	StatusSuspended Status = "suspended"
 )
 
+// Role es el rol del usuario dentro de ESTE equipo. No es global:
+// un usuario puede ser manager de un equipo y solo player de otro.
+type Role string
+
+const (
+	RolePlayer    Role = "player"
+	RoleTreasurer Role = "treasurer"
+	RoleManager   Role = "manager"
+)
+
 type Membership struct {
 	ID           string
 	UserID       string
 	TeamID       string
+	Role         Role
 	Status       Status
 	JerseyNumber *int
 	Position     string
@@ -36,7 +47,7 @@ type TeamMember struct {
 	AvatarURL    string    `json:"avatar_url,omitempty"`
 	Email        string    `json:"email"`
 	Phone        string    `json:"phone,omitempty"`
-	Role         string    `json:"role"`
+	Role         Role      `json:"role"`
 	JerseyNumber *int      `json:"jersey_number,omitempty"`
 	Position     string    `json:"position,omitempty"`
 	Status       Status    `json:"status"`
@@ -47,7 +58,9 @@ type Repository interface {
 	FindByID(ctx context.Context, id string) (*Membership, error)
 	FindByUserAndTeam(ctx context.Context, userID, teamID string) (*Membership, error)
 	ListByTeam(ctx context.Context, teamID string) ([]*TeamMember, error)
+	ListByUser(ctx context.Context, userID string) ([]*TeamMember, error)
 	GetMemberByID(ctx context.Context, membershipID string) (*TeamMember, error)
 	Create(ctx context.Context, m *Membership) error
 	UpdateStatus(ctx context.Context, id string, status Status) error
+	UpdateRole(ctx context.Context, id string, role Role) error
 }

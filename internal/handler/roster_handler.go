@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 )
 
@@ -29,6 +30,27 @@ func (h *RosterHandler) ListByTeam(c *gin.Context) {
 	c.JSON(http.StatusOK, members)
 }
 
+// ListMine GET /me/memberships
+// Lista los equipos (y el rol en cada uno) del usuario autenticado.
+// El mobile la usa para resolver la sesión activa tras login/refresh.
+func (h *RosterHandler) ListMine(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	members, err := h.repo.ListByUser(c.Request.Context(), claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list memberships"})
+		return
+	}
+	if members == nil {
+		members = []*membership.TeamMember{}
+	}
+	c.JSON(http.StatusOK, members)
+}
+
 func (h *RosterHandler) GetMember(c *gin.Context) {
 	m, err := h.repo.GetMemberByID(c.Request.Context(), c.Param("membershipId"))
 	if errors.Is(err, membership.ErrNotFound) {
@@ -44,12 +66,22 @@ func (h *RosterHandler) GetMember(c *gin.Context) {
 
 func (h *RosterHandler) AddMember(c *gin.Context) {
 	var req struct {
-		UserID       string `json:"user_id"       binding:"required"`
-		JerseyNumber *int   `json:"jersey_number"`
-		Position     string `json:"position"`
+		UserID       string          `json:"user_id"       binding:"required"`
+		Role         membership.Role `json:"role"`
+		JerseyNumber *int            `json:"jersey_number"`
+		Position     string          `json:"position"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	role := req.Role
+	if role == "" {
+		role = membership.RolePlayer
+	}
+	if role != membership.RolePlayer && role != membership.RoleTreasurer && role != membership.RoleManager {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
 		return
 	}
 
@@ -63,6 +95,7 @@ func (h *RosterHandler) AddMember(c *gin.Context) {
 	m := &membership.Membership{
 		UserID:       req.UserID,
 		TeamID:       c.Param("id"),
+		Role:         role,
 		Status:       membership.StatusActive,
 		JerseyNumber: req.JerseyNumber,
 		Position:     req.Position,
@@ -95,4 +128,33 @@ func (h *RosterHandler) UpdateStatus(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "updated"})
+}
+
+// UpdateRole PATCH /teams/:id/roster/:membershipId/role
+// TODO: restringir a memberships con role=manager del equipo (ver auth.ClaimsFromContext)
+// una vez que haya middleware de autorización por rol.
+func (h *RosterHandler) UpdateRole(c *gin.Context) {
+	var req struct {
+		Role membership.Role `json:"role" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Role != membership.RolePlayer && req.Role != membership.RoleTreasurer && req.Role != membership.RoleManager {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
+		return
+	}
+
+	if err := h.repo.UpdateRole(c.Request.Context(), c.Param("membershipId"), req.Role); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not update role"})
+		return
+	}
+
+	member, err := h.repo.GetMemberByID(c.Request.Context(), c.Param("membershipId"))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "updated"})
+		return
+	}
+	c.JSON(http.StatusOK, member)
 }

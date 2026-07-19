@@ -5,18 +5,29 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
 )
 
 type TeamHandler struct {
-	repo team.Repository
+	repo        team.Repository
+	memberships membership.Repository
 }
 
-func NewTeamHandler(repo team.Repository) *TeamHandler {
-	return &TeamHandler{repo: repo}
+func NewTeamHandler(repo team.Repository, memberships membership.Repository) *TeamHandler {
+	return &TeamHandler{repo: repo, memberships: memberships}
 }
 
+// Create POST /teams
+// El creador queda asignado automáticamente como manager del equipo.
 func (h *TeamHandler) Create(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	var req struct {
 		Name      string `json:"name"       binding:"required"`
 		SportID   string `json:"sport_id"   binding:"required"`
@@ -47,6 +58,18 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create team"})
 		return
 	}
+
+	m := &membership.Membership{
+		UserID: claims.UserID,
+		TeamID: t.ID,
+		Role:   membership.RoleManager,
+		Status: membership.StatusActive,
+	}
+	if err := h.memberships.Create(c.Request.Context(), m); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "team created but could not assign manager membership"})
+		return
+	}
+
 	c.JSON(http.StatusCreated, t)
 }
 

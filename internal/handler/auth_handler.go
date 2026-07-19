@@ -46,7 +46,6 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	u := &user.User{
 		Name:         req.Name,
 		Email:        req.Email,
-		Role:         user.RolePlayer,
 		PasswordHash: string(hash),
 	}
 	if err := h.users.Create(c.Request.Context(), u); err != nil {
@@ -163,7 +162,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 }
 
 func (h *AuthHandler) issueTokens(ctx context.Context, u *user.User) (accessToken, refreshToken string, err error) {
-	accessToken, err = auth.NewAccessToken(u.ID, string(u.Role), h.jwtSecret)
+	accessToken, err = auth.NewAccessToken(u.ID, h.jwtSecret)
 	if err != nil {
 		return
 	}

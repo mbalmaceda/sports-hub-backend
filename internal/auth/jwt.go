@@ -7,16 +7,17 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// Claims solo identifica al usuario. El rol no vive acá porque es por
+// membership (un usuario puede ser manager de un equipo y player de otro);
+// se resuelve por request contra memberships, no se cachea en el token.
 type Claims struct {
 	UserID string `json:"user_id"`
-	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
-func NewAccessToken(userID, role, secret string) (string, error) {
+func NewAccessToken(userID, secret string) (string, error) {
 	claims := Claims{
 		UserID: userID,
-		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

@@ -8,19 +8,12 @@ import (
 
 var ErrNotFound = errors.New("user not found")
 
-type Role string
-
-const (
-	RoleAdmin  Role = "admin"
-	RoleCoach  Role = "coach"
-	RolePlayer Role = "player"
-)
-
+// User no tiene rol: el rol es por membership (ver domain/membership),
+// porque un usuario puede tener un rol distinto en cada equipo.
 type User struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Email        string    `json:"email"`
-	Role         Role      `json:"role"`
 	PushToken    string    `json:"-"`
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`

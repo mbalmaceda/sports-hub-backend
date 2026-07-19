@@ -49,7 +49,7 @@ func main() {
 
 	// Handlers
 	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, cfg.JWTSecret)
-	teamHandler := handler.NewTeamHandler(teamRepo)
+	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo)
 	rosterHandler := handler.NewRosterHandler(rosterRepo)
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
@@ -70,6 +70,8 @@ func main() {
 	protected := r.Group("/")
 	protected.Use(auth.Middleware(cfg.JWTSecret))
 	{
+		protected.GET("/me/memberships", rosterHandler.ListMine)
+
 		protected.GET("/teams", teamHandler.List)
 		protected.POST("/teams", teamHandler.Create)
 		protected.GET("/teams/:id", teamHandler.GetByID)
@@ -79,6 +81,7 @@ func main() {
 		protected.POST("/teams/:id/roster", rosterHandler.AddMember)
 		protected.GET("/teams/:id/roster/:membershipId", rosterHandler.GetMember)
 		protected.PATCH("/teams/:id/roster/:membershipId/status", rosterHandler.UpdateStatus)
+		protected.PATCH("/teams/:id/roster/:membershipId/role", rosterHandler.UpdateRole)
 
 		protected.GET("/teams/:id/fees", feeHandler.ListByTeamAndPeriod)
 		protected.POST("/teams/:id/generate-fees", feeHandler.Generate)
