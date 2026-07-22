@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
@@ -59,6 +60,12 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:8081", "http://localhost:8082", "http://localhost:19006", "http://localhost:19000"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowCredentials: false,
+	}))
 
 	r.GET("/health", handler.Health)
 
@@ -85,6 +92,7 @@ func main() {
 		protected.GET("/teams/:id/roster", rosterHandler.ListByTeam)
 		protected.POST("/teams/:id/roster", rosterHandler.AddMember)
 		protected.GET("/teams/:id/roster/:membershipId", rosterHandler.GetMember)
+		protected.GET("/memberships/:membershipId", rosterHandler.GetMember)
 		protected.PATCH("/teams/:id/roster/:membershipId/status", rosterHandler.UpdateStatus)
 		protected.PATCH("/teams/:id/roster/:membershipId/role", rosterHandler.UpdateRole)
 
