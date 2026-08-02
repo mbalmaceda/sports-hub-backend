@@ -1,4 +1,4 @@
-.PHONY: run build tidy test migrate-up migrate-down
+.PHONY: run build tidy test migrate-up migrate-down seed
 
 run:
 	go run ./cmd/api
@@ -17,3 +17,6 @@ migrate-up:
 
 migrate-down:
 	go run ./cmd/migrate down
+
+seed:
+	go run ./cmd/seed

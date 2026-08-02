@@ -43,6 +43,9 @@ func main() {
 	rosterRepo := postgres.NewRosterRepository(pool)
 	feeRepo := postgres.NewFeeRepository(pool)
 	paymentRepo := postgres.NewPaymentRepository(pool)
+	competitionRepo := postgres.NewCompetitionRepository(pool)
+	friendlyRepo := postgres.NewFriendlyRepository(pool)
+	matchRepo := postgres.NewMatchRepository(pool)
 
 	// Notifier
 	notifier := expo.New()
@@ -55,6 +58,9 @@ func main() {
 	rosterHandler := handler.NewRosterHandler(rosterRepo)
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
+	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo)
+	friendlyHandler := handler.NewFriendlyHandler(friendlyRepo, competitionRepo, matchRepo, rosterRepo)
+	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo)
 
 	// Router
 	r := gin.New()
@@ -114,6 +120,35 @@ func main() {
 
 		protected.GET("/payments/:id", paymentHandler.GetByID)
 		protected.POST("/payments/:id/reverse", paymentHandler.Reverse)
+
+		// ── Competencias ──
+		protected.GET("/teams/:id/competitions", competitionHandler.ListByTeam)
+		protected.POST("/teams/:id/competitions", competitionHandler.Create)
+		protected.GET("/teams/:id/competition-invitations", competitionHandler.ListInvitations)
+
+		protected.GET("/competitions/:competitionId", competitionHandler.GetByID)
+		protected.GET("/competitions/:competitionId/entries", competitionHandler.ListEntries)
+		protected.POST("/competitions/:competitionId/invitations", competitionHandler.Invite)
+		protected.POST("/competition-invitations/:invitationId/respond", competitionHandler.RespondToInvitation)
+
+		// ── Amistosos ──
+		protected.GET("/teams/:id/friendlies", friendlyHandler.ListByTeam)
+		protected.POST("/teams/:id/friendlies", friendlyHandler.Create)
+		protected.GET("/friendlies/:challengeId", friendlyHandler.GetByID)
+		protected.GET("/friendlies/:challengeId/proposals", friendlyHandler.ListProposals)
+		protected.POST("/friendlies/:challengeId/counter", friendlyHandler.Counter)
+		protected.POST("/friendlies/:challengeId/accept", friendlyHandler.Accept)
+		protected.POST("/friendlies/:challengeId/decline", friendlyHandler.Decline)
+
+		// ── Partidos y convocatorias ──
+		protected.GET("/teams/:id/matches", matchHandler.ListByTeam)
+		protected.GET("/teams/:id/match-conflicts", matchHandler.ScheduleConflicts)
+		protected.GET("/competitions/:competitionId/matches", matchHandler.ListByCompetition)
+		protected.GET("/matches/:matchId", matchHandler.GetByID)
+		protected.GET("/matches/:matchId/callups", matchHandler.ListCallups)
+		protected.POST("/matches/:matchId/callups", matchHandler.CallUp)
+		protected.POST("/matches/:matchId/callups/respond", matchHandler.RespondToCallup)
+		protected.GET("/memberships/:membershipId/callups", matchHandler.ListCallupsByMembership)
 	}
 
 	slog.Info("server starting", "port", cfg.Port)
