@@ -46,6 +46,9 @@ func main() {
 	competitionRepo := postgres.NewCompetitionRepository(pool)
 	friendlyRepo := postgres.NewFriendlyRepository(pool)
 	matchRepo := postgres.NewMatchRepository(pool)
+	chargeRepo := postgres.NewChargeRepository(pool)
+	fundsRepo := postgres.NewFundsRepository(pool)
+	onboardingRepo := postgres.NewOnboardingRepository(pool)
 
 	// Notifier
 	notifier := expo.New()
@@ -61,6 +64,8 @@ func main() {
 	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo)
 	friendlyHandler := handler.NewFriendlyHandler(friendlyRepo, competitionRepo, matchRepo, rosterRepo)
 	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo)
+	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo)
+	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo)
 
 	// Router
 	r := gin.New()
@@ -149,6 +154,28 @@ func main() {
 		protected.POST("/matches/:matchId/callups", matchHandler.CallUp)
 		protected.POST("/matches/:matchId/callups/respond", matchHandler.RespondToCallup)
 		protected.GET("/memberships/:membershipId/callups", matchHandler.ListCallupsByMembership)
+
+		// ── Cobros ──
+		protected.POST("/teams/:id/charges", chargeHandler.Split)
+		protected.GET("/teams/:id/funds", chargeHandler.Funds)
+		protected.GET("/teams/:id/bank-account", teamHandler.GetBankAccount)
+		protected.PUT("/teams/:id/bank-account", teamHandler.SaveBankAccount)
+		protected.GET("/competitions/:competitionId/charges", chargeHandler.ListByCompetition)
+		protected.GET("/memberships/:membershipId/charges", chargeHandler.ListByMembership)
+		protected.POST("/charges/:chargeId/receipt", chargeHandler.SubmitReceipt)
+		protected.POST("/charges/:chargeId/confirm", chargeHandler.Confirm)
+		protected.POST("/charges/:chargeId/reject", chargeHandler.RejectReceipt)
+
+		// ── Incorporación ──
+		protected.GET("/people/lookup", onboardingHandler.FindPerson)
+		protected.GET("/teams/search", onboardingHandler.SearchTeams)
+		protected.GET("/me/team-invitations", onboardingHandler.ListMyInvitations)
+		protected.GET("/teams/:id/invitations", onboardingHandler.ListTeamInvitations)
+		protected.POST("/teams/:id/invitations", onboardingHandler.InvitePerson)
+		protected.POST("/team-invitations/:invitationId/respond", onboardingHandler.RespondToInvitation)
+		protected.GET("/teams/:id/join-requests", onboardingHandler.ListJoinRequests)
+		protected.POST("/teams/:id/join-requests", onboardingHandler.RequestToJoin)
+		protected.POST("/join-requests/:requestId/respond", onboardingHandler.RespondToJoinRequest)
 	}
 
 	slog.Info("server starting", "port", cfg.Port)

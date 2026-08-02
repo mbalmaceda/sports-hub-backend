@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-var ErrNotFound = errors.New("team not found")
+var (
+	ErrNotFound            = errors.New("team not found")
+	ErrBankAccountNotFound = errors.New("team has no bank account on file")
+)
 
 type Team struct {
 	ID        string    `json:"id"`
@@ -22,6 +25,22 @@ type Team struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// BankAccount son los datos a los que los jugadores le transfieren al equipo.
+//
+// Los campos son genéricos y no chilenos a propósito: HolderTaxID en vez de RUT,
+// AccountType como texto libre en vez de un enum con las cuentas de un solo
+// país. El mismo modelo tiene que servir para el CUIT argentino y el CPF
+// brasileño sin migrar la tabla.
+type BankAccount struct {
+	TeamID        string    `json:"team_id"`
+	BankName      string    `json:"bank_name"`
+	AccountType   string    `json:"account_type"`
+	AccountNumber string    `json:"account_number"`
+	HolderName    string    `json:"holder_name"`
+	HolderTaxID   string    `json:"holder_tax_id"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type FeeConfig struct {
 	FeeAmount int64
 	FeeDueDay int
@@ -32,4 +51,7 @@ type Repository interface {
 	Create(ctx context.Context, t *Team) error
 	List(ctx context.Context) ([]*Team, error)
 	UpdateFeeConfig(ctx context.Context, id string, cfg FeeConfig) error
+	SearchByName(ctx context.Context, query string) ([]*Team, error)
+	GetBankAccount(ctx context.Context, teamID string) (*BankAccount, error)
+	SaveBankAccount(ctx context.Context, acc *BankAccount) error
 }

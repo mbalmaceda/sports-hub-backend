@@ -20,13 +20,17 @@ func NewFriendlyRepository(pool *pgxpool.Pool) *FriendlyRepository {
 }
 
 const challengeColumns = `
-	id, competition_id, challenger_team_id, challenged_team_id, status, expires_at, created_at`
+	id, competition_id, challenger_team_id, challenged_team_id, status, expires_at, created_at,
+	(SELECT fp.proposed_by_team_id FROM friendly_proposals fp
+		WHERE fp.challenge_id = friendly_challenges.id
+		ORDER BY fp.created_at DESC
+		LIMIT 1) AS last_proposed_by_team_id`
 
 func scanChallenge(row pgx.Row) (*friendly.Challenge, error) {
 	ch := &friendly.Challenge{}
 	err := row.Scan(
 		&ch.ID, &ch.CompetitionID, &ch.ChallengerTeamID, &ch.ChallengedTeamID,
-		&ch.Status, &ch.ExpiresAt, &ch.CreatedAt,
+		&ch.Status, &ch.ExpiresAt, &ch.CreatedAt, &ch.LastProposedByTeamID,
 	)
 	return ch, err
 }

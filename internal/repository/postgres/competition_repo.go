@@ -59,12 +59,21 @@ func (r *CompetitionRepository) FindByID(ctx context.Context, id string) (*compe
 	return c, nil
 }
 
+// ListByTeam devuelve las competencias donde el equipo es parte, aunque todavía
+// no tenga una entrada. Un equipo retado en un amistoso, por ejemplo, no tiene
+// entrada hasta que acepta: si la consulta solo mirara organizer/entries, la
+// invitación no le llegaría a la bandeja.
 func (r *CompetitionRepository) ListByTeam(ctx context.Context, teamID string) ([]*competition.Competition, error) {
 	q := `SELECT` + competitionColumns + `
 		FROM competitions c
 		WHERE c.organizer_team_id = $1
 		   OR EXISTS (SELECT 1 FROM competition_entries e
 		              WHERE e.competition_id = c.id AND e.team_id = $1)
+		   OR EXISTS (SELECT 1 FROM competition_invitations i
+		              WHERE i.competition_id = c.id AND i.to_team_id = $1)
+		   OR EXISTS (SELECT 1 FROM friendly_challenges fc
+		              WHERE fc.competition_id = c.id
+		                AND (fc.challenger_team_id = $1 OR fc.challenged_team_id = $1))
 		ORDER BY c.created_at DESC`
 	rows, err := r.pool.Query(ctx, q, teamID)
 	if err != nil {

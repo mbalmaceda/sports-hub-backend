@@ -95,8 +95,9 @@ type Invitation struct {
 
 type Repository interface {
 	FindByID(ctx context.Context, id string) (*Competition, error)
-	// ListByTeam devuelve las competencias que el equipo organiza o en las que
-	// tiene una entrada, sin importar el estado de esa entrada.
+	// ListByTeam devuelve las competencias en las que el equipo es parte: las que
+	// organiza, las que tiene una entrada, o las que le llegaron como desafío o
+	// invitación todavía sin responder.
 	ListByTeam(ctx context.Context, teamID string) ([]*Competition, error)
 	Create(ctx context.Context, c *Competition) error
 	UpdateStatus(ctx context.Context, id string, status Status) error

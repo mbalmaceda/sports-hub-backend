@@ -66,13 +66,13 @@ func (h *PaymentHandler) Record(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
 
 	var req struct {
-		ObligationID string          `json:"obligation_id"`
-		PayerID      string          `json:"payer_id"   binding:"required"`
-		Amount       int64           `json:"amount"     binding:"required"`
-		Currency     string          `json:"currency"   binding:"required"`
-		Method       payment.Method  `json:"method"     binding:"required"`
-		Notes        string          `json:"notes"`
-		ReceiptURL   string          `json:"receipt_url"`
+		ObligationID string         `json:"obligation_id"`
+		PayerID      string         `json:"payer_id"   binding:"required"`
+		Amount       int64          `json:"amount"     binding:"required"`
+		Currency     string         `json:"currency"   binding:"required"`
+		Method       payment.Method `json:"method"     binding:"required"`
+		Notes        string         `json:"notes"`
+		ReceiptURL   string         `json:"receipt_url"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

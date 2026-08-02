@@ -40,6 +40,12 @@ type Challenge struct {
 	Status           Status    `json:"status"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	CreatedAt        time.Time `json:"created_at"`
+
+	// Quién hizo la última propuesta. Define de quién es el turno: si la hizo
+	// el otro equipo, nos toca responder. La trae el listado para que el
+	// cliente pueda distinguir una contraoferta sin respuesta de una ya
+	// contestada, sin tener que pedir las propuestas una por una.
+	LastProposedByTeamID string `json:"last_proposed_by_team_id,omitempty"`
 }
 
 // Opponent devuelve el otro equipo del desafío.

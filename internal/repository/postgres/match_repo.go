@@ -128,7 +128,9 @@ func (r *MatchRepository) UpdateStatus(ctx context.Context, id string, status ma
 
 // ─── Convocatorias ───────────────────────────────────────────────────────────
 
-const callupColumns = `id, match_id, membership_id, status, called_at, responded_at`
+// Ojo con el espacio inicial: estas constantes se concatenan a `SELECT`/`RETURNING`
+// crudos (`SELECT` + callupColumns), y sin el espacio saldría `SELECTid`.
+const callupColumns = ` id, match_id, membership_id, status, called_at, responded_at`
 
 func scanCallup(row pgx.Row) (*match.Callup, error) {
 	cu := &match.Callup{}
