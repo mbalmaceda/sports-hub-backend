@@ -85,6 +85,73 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
 
+func TestRegister_WithProfile(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+	h := newAuthHandler(userRepo, tokenRepo)
+
+	userRepo.On("Create", mock.Anything, mock.MatchedBy(func(u *user.User) bool {
+		return u.Name == "Mirko" &&
+			u.TaxID == "123456789" &&
+			u.FavoriteSport == "football" &&
+			u.City == "Santiago" &&
+			u.DominantSide == "right" &&
+			u.HeightCm != nil && *u.HeightCm == 175 &&
+			u.WeightKg != nil && *u.WeightKg == 70.5 &&
+			u.BirthDate != nil && u.BirthDate.Format("2006-01-02") == "1998-07-12"
+	})).Return(nil)
+	tokenRepo.On("Create", mock.Anything, mock.AnythingOfType("*auth.RefreshToken")).Return(nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/auth/register",
+		strings.NewReader(`{
+			"name":"Mirko","email":"mirko@test.com","password":"secret123",
+			"tax_id":"12.345.678-9","favorite_sport":"football","height_cm":175,
+			"weight_kg":70.5,"birth_date":"1998-07-12","city":"Santiago","dominant_side":"right"
+		}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Register(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+func TestRegister_DuplicateTaxID(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	h := newAuthHandler(userRepo, &testutil.MockTokenRepo{})
+
+	userRepo.On("Create", mock.Anything, mock.AnythingOfType("*user.User")).
+		Return(user.ErrTaxIDTaken)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/auth/register",
+		strings.NewReader(`{"name":"Test","email":"dup@test.com","password":"secret123","tax_id":"12345678-9"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Register(c)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "tax id already registered", body["error"])
+}
+
+func TestRegister_InvalidDominantSide(t *testing.T) {
+	h := newAuthHandler(&testutil.MockUserRepo{}, &testutil.MockTokenRepo{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/auth/register",
+		strings.NewReader(`{"name":"Test","email":"test@test.com","password":"secret123","dominant_side":"north"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Register(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 func TestLogin_Success(t *testing.T) {
 	userRepo := &testutil.MockUserRepo{}
 	tokenRepo := &testutil.MockTokenRepo{}

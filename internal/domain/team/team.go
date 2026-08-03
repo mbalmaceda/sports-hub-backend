@@ -9,6 +9,7 @@ import (
 var (
 	ErrNotFound            = errors.New("team not found")
 	ErrBankAccountNotFound = errors.New("team has no bank account on file")
+	ErrNameTaken           = errors.New("team name already taken")
 )
 
 type Team struct {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -34,20 +35,46 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
 
 	var req struct {
-		Name      string `json:"name"`
-		Phone     string `json:"phone"`
-		AvatarURL string `json:"avatar_url"`
+		Name          string     `json:"name"`
+		TaxID         string     `json:"tax_id"`
+		Phone         string     `json:"phone"`
+		AvatarURL     string     `json:"avatar_url"`
+		FavoriteSport string     `json:"favorite_sport"`
+		HeightCm      *int       `json:"height_cm"`
+		WeightKg      *float64   `json:"weight_kg"`
+		BirthDate     *user.Date `json:"birth_date"`
+		Alias         string     `json:"alias"`
+		City          string     `json:"city"`
+		DominantSide  string     `json:"dominant_side"`
+		Bio           string     `json:"bio"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if !validDominantSide(req.DominantSide) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "dominant_side must be one of right, left, both"})
+		return
+	}
 
 	if err := h.repo.UpdateProfile(c.Request.Context(), claims.UserID, user.ProfileUpdate{
-		Name:      req.Name,
-		Phone:     req.Phone,
-		AvatarURL: req.AvatarURL,
+		Name:          req.Name,
+		TaxID:         normalizeTaxID(req.TaxID),
+		Phone:         req.Phone,
+		AvatarURL:     req.AvatarURL,
+		FavoriteSport: req.FavoriteSport,
+		HeightCm:      req.HeightCm,
+		WeightKg:      req.WeightKg,
+		BirthDate:     req.BirthDate,
+		Alias:         req.Alias,
+		City:          req.City,
+		DominantSide:  req.DominantSide,
+		Bio:           req.Bio,
 	}); err != nil {
+		if errors.Is(err, user.ErrTaxIDTaken) {
+			c.JSON(http.StatusConflict, gin.H{"error": "tax id already registered"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not update profile"})
 		return
 	}

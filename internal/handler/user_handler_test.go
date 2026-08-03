@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -118,6 +119,92 @@ func TestUpdateProfile_PartialUpdate(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "Nombre original", body["name"])
 	repo.AssertExpectations(t)
+}
+
+func TestUpdateProfile_WithSportsProfile(t *testing.T) {
+	repo := &testutil.MockUserRepo{}
+	h := handler.NewUserHandler(repo)
+
+	height := 175
+	weight := 70.5
+	birth := user.Date{Time: time.Date(1998, 7, 12, 0, 0, 0, 0, time.UTC)}
+	updated := &user.User{
+		ID: "user-1", Name: "Mirko", Email: "mirko@test.com",
+		FavoriteSport: "football", HeightCm: &height, WeightKg: &weight,
+		BirthDate: &birth, City: "Santiago", DominantSide: "right",
+	}
+
+	repo.On("UpdateProfile", mock.Anything, "user-1", user.ProfileUpdate{
+		Name:          "",
+		TaxID:         "123456789",
+		Phone:         "",
+		AvatarURL:     "",
+		FavoriteSport: "football",
+		HeightCm:      &height,
+		WeightKg:      &weight,
+		BirthDate:     &birth,
+		Alias:         "",
+		City:          "Santiago",
+		DominantSide:  "right",
+		Bio:           "",
+	}).Return(nil)
+	repo.On("FindByID", mock.Anything, "user-1").Return(updated, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-1")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/users/me",
+		strings.NewReader(`{
+			"tax_id":"12.345.678-9","favorite_sport":"football","height_cm":175,
+			"weight_kg":70.5,"birth_date":"1998-07-12","city":"Santiago","dominant_side":"right"
+		}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateProfile(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "football", body["favorite_sport"])
+	assert.Equal(t, "Santiago", body["city"])
+	repo.AssertExpectations(t)
+}
+
+func TestUpdateProfile_DuplicateTaxID(t *testing.T) {
+	repo := &testutil.MockUserRepo{}
+	h := handler.NewUserHandler(repo)
+
+	repo.On("UpdateProfile", mock.Anything, "user-1", mock.AnythingOfType("user.ProfileUpdate")).
+		Return(user.ErrTaxIDTaken)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-1")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/users/me",
+		strings.NewReader(`{"tax_id":"12345678-9"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateProfile(c)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "tax id already registered", body["error"])
+}
+
+func TestUpdateProfile_InvalidDominantSide(t *testing.T) {
+	h := handler.NewUserHandler(&testutil.MockUserRepo{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-1")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/users/me",
+		strings.NewReader(`{"dominant_side":"north"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateProfile(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestRegisterPushToken_Success(t *testing.T) {

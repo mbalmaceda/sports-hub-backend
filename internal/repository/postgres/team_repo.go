@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
@@ -44,6 +45,13 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 	return t, nil
 }
 
+func isNameTakenConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "teams_name_lower_key"
+}
+
 func (r *TeamRepository) Create(ctx context.Context, t *team.Team) error {
 	const q = `
 		INSERT INTO teams (name, sport_id, club_id, category, logo_url, fee_amount, fee_due_day, currency, is_active)
@@ -53,6 +61,9 @@ func (r *TeamRepository) Create(ctx context.Context, t *team.Team) error {
 		t.Name, t.SportID, t.ClubID, t.Category, t.LogoURL,
 		t.FeeAmount, t.FeeDueDay, t.Currency, t.IsActive,
 	).Scan(&t.ID, &t.CreatedAt)
+	if isNameTakenConflict(err) {
+		return team.ErrNameTaken
+	}
 	if err != nil {
 		return fmt.Errorf("team.Create: %w", err)
 	}

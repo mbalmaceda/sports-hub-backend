@@ -115,6 +115,24 @@ func TestCreateTeam_MembershipFails(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestCreateTeam_NameTaken(t *testing.T) {
+	teamRepo := &testutil.MockTeamRepo{}
+	h := newTeamHandler(teamRepo, &testutil.MockMembershipRepo{})
+
+	teamRepo.On("Create", mock.Anything, mock.AnythingOfType("*team.Team")).Return(team.ErrNameTaken)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-1")
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams",
+		strings.NewReader(`{"name":"Deportivo","sport_id":"football","category":"Senior","fee_due_day":1,"currency":"CLP"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Create(c)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
 func TestGetTeamByID_Success(t *testing.T) {
 	teamRepo := &testutil.MockTeamRepo{}
 	h := newTeamHandler(teamRepo, &testutil.MockMembershipRepo{})

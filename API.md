@@ -13,14 +13,28 @@ Authorization: Bearer <access_token>
 ## Auth
 
 ### POST `/auth/register`
-Registra un usuario nuevo y devuelve tokens.
+Registra un usuario nuevo y devuelve tokens. Los campos del perfil deportivo
+son opcionales: la cuenta se crea igual sin ellos.
+
+`birth_date` va en formato `YYYY-MM-DD`. El RUT (`tax_id`) se normaliza
+(sin puntos ni guiones) antes de guardarse; intentar registrar un RUT ya
+existente devuelve **409**.
 
 **Body**
 ```json
 {
   "name": "Mirko Balmaceda",
   "email": "mirko@example.com",
-  "password": "minimo6chars"
+  "password": "minimo6chars",
+  "tax_id": "12.345.678-9",
+  "favorite_sport": "football",
+  "height_cm": 175,
+  "weight_kg": 70.5,
+  "birth_date": "1998-07-12",
+  "alias": "Miri",
+  "city": "Santiago",
+  "dominant_side": "right",
+  "bio": "Mediocampista"
 }
 ```
 
@@ -33,12 +47,23 @@ Registra un usuario nuevo y devuelve tokens.
     "id": "uuid",
     "name": "Mirko Balmaceda",
     "email": "mirko@example.com",
-    "role": "player",
+    "tax_id": "123456789",
+    "favorite_sport": "football",
+    "height_cm": 175,
+    "weight_kg": 70.5,
+    "birth_date": "1998-07-12",
+    "alias": "Miri",
+    "city": "Santiago",
+    "dominant_side": "right",
+    "bio": "Mediocampista",
     "created_at": "2026-07-18T00:00:00Z",
     "updated_at": "2026-07-18T00:00:00Z"
   }
 }
 ```
+
+**Response 409** `{ "error": "email already registered" }` |
+`{ "error": "tax id already registered" }`
 
 ---
 
@@ -124,7 +149,8 @@ Lista todos los equipos activos.
 }
 ```
 
-**Response 201** — objeto Team
+**Response 201** — objeto Team  
+**Response 409** `{ "error": "team name already taken" }` — el nombre ya existe (sin distinguir mayúsculas)
 
 ---
 
@@ -403,8 +429,17 @@ Retorna el perfil del usuario autenticado.
   "id": "uuid",
   "name": "Mirko Balmaceda",
   "email": "mirko@test.com",
+  "tax_id": "123456789",
   "phone": "+56912345678",
   "avatar_url": "https://cdn.example.com/avatar.jpg",
+  "favorite_sport": "football",
+  "height_cm": 175,
+  "weight_kg": 70.5,
+  "birth_date": "1998-07-12",
+  "alias": "Miri",
+  "city": "Santiago",
+  "dominant_side": "right",
+  "bio": "Mediocampista",
   "created_at": "...",
   "updated_at": "..."
 }
@@ -415,16 +450,29 @@ Retorna el perfil del usuario autenticado.
 ### PATCH `/users/me`
 Actualización parcial del perfil. Campos omitidos o vacíos no sobreescriben el valor existente.
 
+`birth_date` va en formato `YYYY-MM-DD`. El RUT (`tax_id`) se normaliza
+(sin puntos ni guiones) antes de guardarse; un RUT ya tomado devuelve **409**.
+
 **Body** _(todos opcionales)_
 ```json
 {
   "name": "Mirko B.",
+  "tax_id": "12.345.678-9",
   "phone": "+56912345678",
-  "avatar_url": "https://cdn.example.com/avatar.jpg"
+  "avatar_url": "https://cdn.example.com/avatar.jpg",
+  "favorite_sport": "football",
+  "height_cm": 175,
+  "weight_kg": 70.5,
+  "birth_date": "1998-07-12",
+  "alias": "Miri",
+  "city": "Santiago",
+  "dominant_side": "right",
+  "bio": "Mediocampista"
 }
 ```
 
-**Response 200** — objeto User actualizado
+**Response 200** — objeto User actualizado  
+**Response 409** `{ "error": "tax id already registered" }`
 
 ---
 

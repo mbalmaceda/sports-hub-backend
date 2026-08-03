@@ -43,14 +43,14 @@ func (r *OnboardingRepository) FindPerson(
 	switch method {
 	case onboarding.LookupByTaxID:
 		q = `
-			SELECT u.id, u.full_name, u.email, COALESCE(u.tax_id, ''),
+			SELECT u.id, u.name, u.email, COALESCE(u.tax_id, ''),
 			       EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.status = 'active')
 			FROM users u
 			WHERE REPLACE(REPLACE(REPLACE(LOWER(u.tax_id), '.', ''), '-', ''), ' ', '') = $1`
 		arg = normalizeTaxID(needle)
 	default:
 		q = `
-			SELECT u.id, u.full_name, u.email, COALESCE(u.tax_id, ''),
+			SELECT u.id, u.name, u.email, COALESCE(u.tax_id, ''),
 			       EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.status = 'active')
 			FROM users u
 			WHERE LOWER(u.email) = $1`
@@ -162,7 +162,7 @@ func (r *OnboardingRepository) RespondToInvitation(
 const joinRequestCols = `
 	r.id, r.team_id, r.user_id, COALESCE(r.message, ''), r.status,
 	r.created_at, r.responded_at, r.resolved_by,
-	u.full_name, u.email, COALESCE(u.tax_id, '')`
+	u.name, u.email, COALESCE(u.tax_id, '')`
 
 func scanJoinRequest(row pgx.Row) (*onboarding.JoinRequest, error) {
 	req := &onboarding.JoinRequest{}

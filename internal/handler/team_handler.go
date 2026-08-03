@@ -57,6 +57,10 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		IsActive:  true,
 	}
 	if err := h.repo.Create(c.Request.Context(), t); err != nil {
+		if errors.Is(err, team.ErrNameTaken) {
+			c.JSON(http.StatusConflict, gin.H{"error": "team name already taken"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create team"})
 		return
 	}
