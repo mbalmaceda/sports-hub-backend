@@ -39,6 +39,10 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		FeeAmount int64  `json:"fee_amount"`
 		FeeDueDay int    `json:"fee_due_day" binding:"min=1,max=31"`
 		Currency  string `json:"currency"   binding:"required"`
+		// Puntero para distinguir "no lo mandó" de "dijo que no juega": un
+		// cliente viejo que omita el campo tiene que seguir creando un manager
+		// que no ocupa lugar en la plantilla.
+		PlaysAsPlayer *bool `json:"plays_as_player"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -65,11 +69,17 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		return
 	}
 
+	playsAsPlayer := membership.DefaultPlaysAsPlayer(membership.RoleManager)
+	if req.PlaysAsPlayer != nil {
+		playsAsPlayer = *req.PlaysAsPlayer
+	}
+
 	m := &membership.Membership{
-		UserID: claims.UserID,
-		TeamID: t.ID,
-		Role:   membership.RoleManager,
-		Status: membership.StatusActive,
+		UserID:        claims.UserID,
+		TeamID:        t.ID,
+		Role:          membership.RoleManager,
+		PlaysAsPlayer: playsAsPlayer,
+		Status:        membership.StatusActive,
 	}
 	if err := h.memberships.Create(c.Request.Context(), m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "team created but could not assign manager membership"})

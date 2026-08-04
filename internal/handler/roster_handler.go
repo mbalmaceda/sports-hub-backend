@@ -66,10 +66,11 @@ func (h *RosterHandler) GetMember(c *gin.Context) {
 
 func (h *RosterHandler) AddMember(c *gin.Context) {
 	var req struct {
-		UserID       string          `json:"user_id"       binding:"required"`
-		Role         membership.Role `json:"role"`
-		JerseyNumber *int            `json:"jersey_number"`
-		Position     string          `json:"position"`
+		UserID        string          `json:"user_id"       binding:"required"`
+		Role          membership.Role `json:"role"`
+		PlaysAsPlayer *bool           `json:"plays_as_player"`
+		JerseyNumber  *int            `json:"jersey_number"`
+		Position      string          `json:"position"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -92,13 +93,19 @@ func (h *RosterHandler) AddMember(c *gin.Context) {
 		return
 	}
 
+	playsAsPlayer := membership.DefaultPlaysAsPlayer(role)
+	if req.PlaysAsPlayer != nil {
+		playsAsPlayer = *req.PlaysAsPlayer
+	}
+
 	m := &membership.Membership{
-		UserID:       req.UserID,
-		TeamID:       c.Param("id"),
-		Role:         role,
-		Status:       membership.StatusActive,
-		JerseyNumber: req.JerseyNumber,
-		Position:     req.Position,
+		UserID:        req.UserID,
+		TeamID:        c.Param("id"),
+		Role:          role,
+		PlaysAsPlayer: playsAsPlayer,
+		Status:        membership.StatusActive,
+		JerseyNumber:  req.JerseyNumber,
+		Position:      req.Position,
 	}
 	if err := h.repo.Create(c.Request.Context(), m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not add member"})

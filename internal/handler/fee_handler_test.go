@@ -36,9 +36,9 @@ func TestGenerateFees_Success(t *testing.T) {
 		FeeAmount: 10000, FeeDueDay: 5, Currency: "CLP",
 	}
 	members := []*membership.TeamMember{
-		{MembershipID: "m-1", UserID: "u-1", TeamID: teamID, Status: "active"},
-		{MembershipID: "m-2", UserID: "u-2", TeamID: teamID, Status: "active"},
-		{MembershipID: "m-3", UserID: "u-3", TeamID: teamID, Status: "inactive"},
+		{MembershipID: "m-1", UserID: "u-1", TeamID: teamID, Status: "active", PlaysAsPlayer: true},
+		{MembershipID: "m-2", UserID: "u-2", TeamID: teamID, Status: "active", PlaysAsPlayer: true},
+		{MembershipID: "m-3", UserID: "u-3", TeamID: teamID, Status: "inactive", PlaysAsPlayer: true},
 	}
 
 	teamRepo.On("FindByID", mock.Anything, teamID).Return(t1, nil)
@@ -68,6 +68,45 @@ func TestGenerateFees_Success(t *testing.T) {
 	memberRepo.AssertExpectations(t)
 }
 
+// La cuota la paga quien juega. El que solo dirige no la debe, y el manager que
+// además juega sí: por eso el filtro mira plays_as_player y no el rol.
+func TestGenerateFees_OnlyForMembersWhoPlay(t *testing.T) {
+	feeRepo := &testutil.MockFeeRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	teamRepo := &testutil.MockTeamRepo{}
+	h := newFeeHandler(feeRepo, memberRepo, teamRepo)
+
+	teamID := "team-1"
+	t1 := &team.Team{ID: teamID, Name: "Deportivo Norte", FeeAmount: 10000, FeeDueDay: 5, Currency: "CLP"}
+	members := []*membership.TeamMember{
+		{MembershipID: "m-player", TeamID: teamID, Role: membership.RolePlayer, Status: "active", PlaysAsPlayer: true},
+		{MembershipID: "m-coach", TeamID: teamID, Role: membership.RoleManager, Status: "active", PlaysAsPlayer: false},
+		{MembershipID: "m-playing-manager", TeamID: teamID, Role: membership.RoleManager, Status: "active", PlaysAsPlayer: true},
+	}
+
+	teamRepo.On("FindByID", mock.Anything, teamID).Return(t1, nil)
+	memberRepo.On("ListByTeam", mock.Anything, teamID).Return(members, nil)
+
+	var captured []*fee.Obligation
+	feeRepo.On("BulkCreate", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			captured = args.Get(1).([]*fee.Obligation)
+		}).Return(2, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: teamID}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+teamID+"/generate-fees",
+		strings.NewReader(`{"period_year":2026,"period_month":7}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Generate(c)
+
+	require.Len(t, captured, 2)
+	ids := []string{captured[0].MembershipID, captured[1].MembershipID}
+	assert.ElementsMatch(t, []string{"m-player", "m-playing-manager"}, ids)
+}
+
 func TestGenerateFees_SkipsInactiveMembers(t *testing.T) {
 	feeRepo := &testutil.MockFeeRepo{}
 	memberRepo := &testutil.MockMembershipRepo{}
@@ -77,8 +116,8 @@ func TestGenerateFees_SkipsInactiveMembers(t *testing.T) {
 	teamID := "team-1"
 	t1 := &team.Team{ID: teamID, FeeAmount: 5000, FeeDueDay: 1, Currency: "USD"}
 	members := []*membership.TeamMember{
-		{MembershipID: "m-1", Status: "inactive"},
-		{MembershipID: "m-2", Status: "suspended"},
+		{MembershipID: "m-1", Status: "inactive", PlaysAsPlayer: true},
+		{MembershipID: "m-2", Status: "suspended", PlaysAsPlayer: true},
 	}
 
 	teamRepo.On("FindByID", mock.Anything, teamID).Return(t1, nil)
@@ -131,7 +170,7 @@ func TestGenerateFees_FeeUsesTeamConfig(t *testing.T) {
 		ID: teamID, FeeAmount: 25000, FeeDueDay: 15, Currency: "CLP",
 	}
 	members := []*membership.TeamMember{
-		{MembershipID: "m-1", Status: "active"},
+		{MembershipID: "m-1", Status: "active", PlaysAsPlayer: true},
 	}
 
 	teamRepo.On("FindByID", mock.Anything, teamID).Return(t1, nil)

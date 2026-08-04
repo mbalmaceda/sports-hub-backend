@@ -138,7 +138,10 @@ func (h *FeeHandler) Generate(c *gin.Context) {
 
 	obligations := make([]*fee.Obligation, 0, len(members))
 	for _, m := range members {
-		if m.Status != "active" {
+		// La cuota la paga quien juega. Antes se generaba para todo miembro
+		// activo —también para el manager que solo dirige, que después la app
+		// escondía de la lista de cuotas y quedaba como deuda fantasma.
+		if m.Status != "active" || !m.PlaysAsPlayer {
 			continue
 		}
 		obligations = append(obligations, &fee.Obligation{
