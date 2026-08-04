@@ -96,6 +96,7 @@ func main() {
 	{
 		protected.GET("/users/me", userHandler.Me)
 		protected.PATCH("/users/me", userHandler.UpdateProfile)
+		protected.DELETE("/users/me", userHandler.DeleteAccount)
 		protected.PUT("/users/me/push-token", userHandler.RegisterPushToken)
 
 		protected.GET("/me/memberships", rosterHandler.ListMine)

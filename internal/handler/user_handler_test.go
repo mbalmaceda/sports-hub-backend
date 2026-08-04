@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -240,4 +241,61 @@ func TestRegisterPushToken_MissingToken(t *testing.T) {
 	h.RegisterPushToken(c)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestDeleteAccount_Success(t *testing.T) {
+	repo := &testutil.MockUserRepo{}
+	h := handler.NewUserHandler(repo)
+
+	repo.On("Delete", mock.Anything, "user-1").Return(nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-1")
+	c.Request = httptest.NewRequest(http.MethodDelete, "/users/me", nil)
+
+	h.DeleteAccount(c)
+	// Gin no escribe el header hasta el final del request; llamando al handler
+	// suelto hay que forzarlo, que es lo que hace el engine en producción.
+	c.Writer.WriteHeaderNow()
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Empty(t, w.Body.String())
+	repo.AssertCalled(t, "Delete", mock.Anything, "user-1")
+}
+
+// Borrar dos veces no puede parecer exitoso: la segunda vez la cuenta ya no está
+// y el repositorio devuelve ErrNotFound.
+func TestDeleteAccount_AlreadyDeleted(t *testing.T) {
+	repo := &testutil.MockUserRepo{}
+	h := handler.NewUserHandler(repo)
+
+	repo.On("Delete", mock.Anything, "ghost").Return(user.ErrNotFound)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "ghost")
+	c.Request = httptest.NewRequest(http.MethodDelete, "/users/me", nil)
+
+	h.DeleteAccount(c)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// Un fallo de base no puede contestar 204: la app cerraría la sesión y borraría
+// los tokens de una cuenta que sigue viva.
+func TestDeleteAccount_RepoFailure(t *testing.T) {
+	repo := &testutil.MockUserRepo{}
+	h := handler.NewUserHandler(repo)
+
+	repo.On("Delete", mock.Anything, "user-1").Return(errors.New("boom"))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-1")
+	c.Request = httptest.NewRequest(http.MethodDelete, "/users/me", nil)
+
+	h.DeleteAccount(c)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }

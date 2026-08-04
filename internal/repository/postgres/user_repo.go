@@ -49,7 +49,7 @@ func isTaxIDConflict(err error) bool {
 }
 
 func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, error) {
-	q := `SELECT` + userColumns + ` FROM users WHERE id = $1`
+	q := `SELECT` + userColumns + ` FROM users WHERE id = $1 AND deleted_at IS NULL`
 	u, err := scanUser(r.pool.QueryRow(ctx, q, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, user.ErrNotFound
@@ -61,7 +61,7 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 }
 
 func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*user.User, error) {
-	q := `SELECT` + userColumns + ` FROM users WHERE email = $1`
+	q := `SELECT` + userColumns + ` FROM users WHERE email = $1 AND deleted_at IS NULL`
 	u, err := scanUser(r.pool.QueryRow(ctx, q, email))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, user.ErrNotFound
@@ -133,6 +133,68 @@ func (r *UserRepository) UpdatePushToken(ctx context.Context, userID, token stri
 	_, err := r.pool.Exec(ctx, q, token, userID)
 	if err != nil {
 		return fmt.Errorf("user.UpdatePushToken: %w", err)
+	}
+	return nil
+}
+
+// Delete anonimiza la cuenta en vez de borrar la fila (ver migración 014) y de
+// paso corta las sesiones abiertas. Va todo en una transacción: una cuenta a
+// medio borrar es peor que una no borrada.
+func (r *UserRepository) Delete(ctx context.Context, id string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("user.Delete: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// El email se reescribe a uno irrecuperable en vez de vaciarse porque la
+	// columna es UNIQUE y NOT NULL, y porque hay que liberar el correo original:
+	// quien borró su cuenta tiene derecho a volver a registrarse con el mismo.
+	// `.invalid` es el TLD que RFC 2606 reserva justo para esto, así que la
+	// dirección resultante no le puede llegar a nadie.
+	const anonymize = `
+		UPDATE users SET
+			name           = 'Cuenta eliminada',
+			email          = 'deleted-' || id || '@zports.invalid',
+			password_hash  = '',
+			tax_id         = NULL,
+			phone          = NULL,
+			avatar_url     = NULL,
+			favorite_sport = NULL,
+			height_cm      = NULL,
+			weight_kg      = NULL,
+			birth_date     = NULL,
+			alias          = NULL,
+			city           = NULL,
+			dominant_side  = NULL,
+			bio            = NULL,
+			push_token     = NULL,
+			deleted_at     = NOW(),
+			updated_at     = NOW()
+		WHERE id = $1 AND deleted_at IS NULL`
+	tag, err := tx.Exec(ctx, anonymize, id)
+	if err != nil {
+		return fmt.Errorf("user.Delete: %w", err)
+	}
+	// Cero filas es la cuenta que no existe o que ya se borró; en ambos casos no
+	// hay nada que hacer y quien llama necesita distinguirlo de un borrado real.
+	if tag.RowsAffected() == 0 {
+		return user.ErrNotFound
+	}
+
+	// Sin esto la sesión sobrevive al borrado: el refresh token dura días.
+	if _, err := tx.Exec(ctx, `DELETE FROM refresh_tokens WHERE user_id = $1`, id); err != nil {
+		return fmt.Errorf("user.Delete refresh_tokens: %w", err)
+	}
+
+	// La membresía no se borra: de ella cuelgan las cuotas y los cobros ya
+	// emitidos. Queda inactiva, que es como el equipo ve a quien ya no está.
+	if _, err := tx.Exec(ctx, `UPDATE memberships SET status = 'inactive' WHERE user_id = $1`, id); err != nil {
+		return fmt.Errorf("user.Delete memberships: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("user.Delete commit: %w", err)
 	}
 	return nil
 }

@@ -87,6 +87,26 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, u)
 }
 
+// DeleteAccount DELETE /users/me
+//
+// Google Play lo exige para toda app que deje crear una cuenta desde el
+// teléfono. Es irreversible y acá no se pide confirmación: confirmar es trabajo
+// de la pantalla, que hace escribir la palabra antes de llegar hasta acá.
+func (h *UserHandler) DeleteAccount(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+
+	if err := h.repo.Delete(c.Request.Context(), claims.UserID); err != nil {
+		if errors.Is(err, user.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete account"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
 // RegisterPushToken PUT /users/me/push-token
 func (h *UserHandler) RegisterPushToken(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
