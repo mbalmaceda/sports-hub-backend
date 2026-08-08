@@ -9,16 +9,23 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 )
 
 type TeamHandler struct {
 	repo        team.Repository
 	memberships membership.Repository
+	firebase    *firebase.Firebase
 	authz       teamAuthorizer
 }
 
-func NewTeamHandler(repo team.Repository, memberships membership.Repository) *TeamHandler {
-	return &TeamHandler{repo: repo, memberships: memberships, authz: teamAuthorizer{memberships: memberships}}
+func NewTeamHandler(repo team.Repository, memberships membership.Repository, fb *firebase.Firebase) *TeamHandler {
+	return &TeamHandler{
+		repo:        repo,
+		memberships: memberships,
+		firebase:    fb,
+		authz:       teamAuthorizer{memberships: memberships},
+	}
 }
 
 // Create POST /teams
@@ -85,6 +92,15 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "team created but could not assign manager membership"})
 		return
 	}
+
+	// Sin esto, quien acaba de crear el equipo no existe para las reglas de
+	// Firestore y no podría leer ni su propio plantel.
+	h.firebase.SyncMembershipAsync(firebase.Membership{
+		TeamID: m.TeamID,
+		UserID: m.UserID,
+		Role:   string(m.Role),
+		Status: string(m.Status),
+	})
 
 	c.JSON(http.StatusCreated, t)
 }

@@ -45,7 +45,7 @@ func newChargeHandler() (*handler.ChargeHandler, chargeDeps) {
 		members:      &testutil.MockMembershipRepo{},
 		funds:        &testutil.MockFundsRepo{},
 	}
-	return handler.NewChargeHandler(d.charges, d.competitions, d.matches, d.members, d.funds), d
+	return handler.NewChargeHandler(d.charges, d.competitions, d.matches, d.members, d.funds, nil), d
 }
 
 func sevenASideCompetition() *competition.Competition {

@@ -11,25 +11,29 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/onboarding"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
 )
 
 type OnboardingHandler struct {
-	onboarding  onboarding.Repository
-	teams       team.Repository
-	memberships membership.Repository
-	authz       teamAuthorizer
+	onboarding    onboarding.Repository
+	teams         team.Repository
+	memberships   membership.Repository
+	notifications *notification.Service
+	authz         teamAuthorizer
 }
 
 func NewOnboardingHandler(
 	repo onboarding.Repository,
 	teams team.Repository,
 	memberships membership.Repository,
+	notifications *notification.Service,
 ) *OnboardingHandler {
 	return &OnboardingHandler{
-		onboarding:  repo,
-		teams:       teams,
-		memberships: memberships,
-		authz:       teamAuthorizer{memberships: memberships},
+		onboarding:    repo,
+		teams:         teams,
+		memberships:   memberships,
+		notifications: notifications,
+		authz:         teamAuthorizer{memberships: memberships},
 	}
 }
 
@@ -158,6 +162,22 @@ func (h *OnboardingHandler) InvitePerson(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "there is already an open invitation for this person"})
 		return
 	}
+
+	// Para quien todavía no tiene equipo, esta es la única notificación que le
+	// puede llegar, así que vale la pena nombrar al equipo en vez de un aviso
+	// genérico. Si no se puede leer el nombre se manda igual: el aviso importa
+	// más que el detalle.
+	body := "Un equipo te invitó a sumarte. Toca para responder."
+	if t, err := h.teams.FindByID(c.Request.Context(), teamID); err == nil {
+		body = t.Name + " te invitó a sumarte. Toca para responder."
+	}
+	h.notifications.NotifyAsync(
+		[]string{req.UserID},
+		"Te invitaron a un equipo",
+		body,
+		map[string]string{"type": "team_invitation", "invitation_id": inv.ID},
+	)
+
 	c.JSON(http.StatusCreated, inv)
 }
 

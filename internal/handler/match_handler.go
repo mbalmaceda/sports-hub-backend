@@ -9,19 +9,26 @@ import (
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
 )
 
 type MatchHandler struct {
-	matches     match.Repository
-	memberships membership.Repository
-	authz       teamAuthorizer
+	matches       match.Repository
+	memberships   membership.Repository
+	notifications *notification.Service
+	authz         teamAuthorizer
 }
 
-func NewMatchHandler(matches match.Repository, memberships membership.Repository) *MatchHandler {
+func NewMatchHandler(
+	matches match.Repository,
+	memberships membership.Repository,
+	notifications *notification.Service,
+) *MatchHandler {
 	return &MatchHandler{
-		matches:     matches,
-		memberships: memberships,
-		authz:       teamAuthorizer{memberships: memberships},
+		matches:       matches,
+		memberships:   memberships,
+		notifications: notifications,
+		authz:         teamAuthorizer{memberships: memberships},
 	}
 }
 
@@ -201,6 +208,15 @@ func (h *MatchHandler) CallUp(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not call up players"})
 		return
 	}
+
+	// Es el aviso que más se espera de la app: hasta ahora había que perseguir
+	// uno por uno para saber quién va.
+	h.notifications.NotifyAsync(
+		userIDsForMemberships(members, req.MembershipIDs),
+		"Te convocaron",
+		"Estás citado para un partido. Toca para confirmar si vas.",
+		map[string]string{"type": "callup_created", "match_id": m.ID},
+	)
 
 	c.JSON(http.StatusCreated, callups)
 }

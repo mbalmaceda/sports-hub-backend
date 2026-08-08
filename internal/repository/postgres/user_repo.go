@@ -137,6 +137,41 @@ func (r *UserRepository) UpdatePushToken(ctx context.Context, userID, token stri
 	return nil
 }
 
+// PushTokensByUserIDs devuelve los tokens de push de esos usuarios, saltándose
+// a quien no tenga (nunca abrió la app en un teléfono, o negó el permiso) y a
+// las cuentas borradas. Que alguien no aparezca en el resultado es normal, no un
+// error: notificar es best-effort.
+func (r *UserRepository) PushTokensByUserIDs(ctx context.Context, userIDs []string) ([]string, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+
+	const q = `
+		SELECT push_token FROM users
+		WHERE id = ANY($1)
+		  AND push_token IS NOT NULL
+		  AND push_token <> ''
+		  AND deleted_at IS NULL`
+	rows, err := r.pool.Query(ctx, q, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("user.PushTokensByUserIDs: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			return nil, fmt.Errorf("user.PushTokensByUserIDs: %w", err)
+		}
+		tokens = append(tokens, token)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("user.PushTokensByUserIDs: %w", err)
+	}
+	return tokens, nil
+}
+
 // Delete anonimiza la cuenta en vez de borrar la fila (ver migración 014) y de
 // paso corta las sesiones abiertas. Va todo en una transacción: una cuenta a
 // medio borrar es peor que una no borrada.

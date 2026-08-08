@@ -33,7 +33,7 @@ func confirmedMatch() *match.Match {
 func TestCallUp_RejectsPlayersFromAnotherTeam(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr)
+	h := handler.NewMatchHandler(mr, memr, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)
@@ -62,7 +62,7 @@ func TestCallUp_RejectsPlayersFromAnotherTeam(t *testing.T) {
 func TestCallUp_PlayerCannotCallUp(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr)
+	h := handler.NewMatchHandler(mr, memr, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)
@@ -90,7 +90,7 @@ func TestCallUp_PlayerCannotCallUp(t *testing.T) {
 func TestRespondToCallup_UsesMembershipFromToken(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr)
+	h := handler.NewMatchHandler(mr, memr, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)
@@ -121,7 +121,7 @@ func TestRespondToCallup_UsesMembershipFromToken(t *testing.T) {
 func TestCallUp_RejectsTeamNotInMatch(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr)
+	h := handler.NewMatchHandler(mr, memr, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)

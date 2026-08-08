@@ -19,7 +19,7 @@ import (
 )
 
 func newTeamHandler(teamRepo *testutil.MockTeamRepo, memberRepo *testutil.MockMembershipRepo) *handler.TeamHandler {
-	return handler.NewTeamHandler(teamRepo, memberRepo)
+	return handler.NewTeamHandler(teamRepo, memberRepo, nil)
 }
 
 func TestCreateTeam_Success(t *testing.T) {
