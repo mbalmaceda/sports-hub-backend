@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/onboarding"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
 )
 
@@ -19,6 +22,7 @@ type OnboardingHandler struct {
 	teams         team.Repository
 	memberships   membership.Repository
 	notifications *notification.Service
+	firebase      *firebase.Firebase
 	authz         teamAuthorizer
 }
 
@@ -27,14 +31,40 @@ func NewOnboardingHandler(
 	teams team.Repository,
 	memberships membership.Repository,
 	notifications *notification.Service,
+	fb *firebase.Firebase,
 ) *OnboardingHandler {
 	return &OnboardingHandler{
 		onboarding:    repo,
 		teams:         teams,
 		memberships:   memberships,
 		notifications: notifications,
+		firebase:      fb,
 		authz:         teamAuthorizer{memberships: memberships},
 	}
+}
+
+// syncMirror refleja en Firestore la membresía que acaba de nacer al aceptar una
+// invitación o una solicitud.
+//
+// Acá la membresía la crea el repositorio de onboarding, no el handler, así que
+// hay que ir a buscarla: sin esto, quien entra por invitación no existe para las
+// reglas y no puede leer nada de su equipo nuevo.
+func (h *OnboardingHandler) syncMirror(ctx context.Context, teamID, userID string) {
+	if !h.firebase.Enabled() {
+		return
+	}
+	m, err := h.memberships.FindByUserAndTeam(ctx, userID, teamID)
+	if err != nil {
+		slog.Error("mirror: could not read new membership",
+			"error", err, "team_id", teamID, "user_id", userID)
+		return
+	}
+	h.firebase.SyncMembershipAsync(firebase.Membership{
+		TeamID: m.TeamID,
+		UserID: m.UserID,
+		Role:   string(m.Role),
+		Status: string(m.Status),
+	})
 }
 
 // FindPerson GET /people/lookup?method=tax_id&value=12.345.678-9
@@ -221,6 +251,12 @@ func (h *OnboardingHandler) RespondToInvitation(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not respond to the invitation"})
 		return
 	}
+
+	// Solo si aceptó: rechazar no crea membresía y no hay nada que reflejar.
+	if *req.Accept {
+		h.syncMirror(c.Request.Context(), inv.TeamID, inv.UserID)
+	}
+
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -319,5 +355,10 @@ func (h *OnboardingHandler) RespondToJoinRequest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not respond to the request"})
 		return
 	}
+
+	if *req.Accept {
+		h.syncMirror(c.Request.Context(), request.TeamID, request.UserID)
+	}
+
 	c.JSON(http.StatusOK, updated)
 }

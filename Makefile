@@ -1,4 +1,4 @@
-.PHONY: run build tidy test migrate-up migrate-down seed
+.PHONY: run build tidy test migrate-up migrate-down seed mirror-sync
 
 run:
 	go run ./cmd/api
@@ -20,3 +20,8 @@ migrate-down:
 
 seed:
 	go run ./cmd/seed
+
+# Reescribe el espejo de membresías en Firestore desde Postgres.
+# Sin --apply solo dice cuántas tocaría.
+mirror-sync:
+	go run ./cmd/mirrorsync $(ARGS)

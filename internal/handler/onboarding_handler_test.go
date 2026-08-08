@@ -21,7 +21,7 @@ func newOnboardingHandler(
 	teams *testutil.MockTeamRepo,
 	members *testutil.MockMembershipRepo,
 ) *handler.OnboardingHandler {
-	return handler.NewOnboardingHandler(repo, teams, members, nil)
+	return handler.NewOnboardingHandler(repo, teams, members, nil, nil)
 }
 
 // Una invitación la responde la persona invitada, nunca el equipo que invitó.
