@@ -18,7 +18,7 @@ import (
 )
 
 func newRosterHandler(repo *testutil.MockMembershipRepo) *handler.RosterHandler {
-	return handler.NewRosterHandler(repo)
+	return handler.NewRosterHandler(repo, nil)
 }
 
 func TestListByTeam_Success(t *testing.T) {

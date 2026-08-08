@@ -107,4 +107,9 @@ type Repository interface {
 	Create(ctx context.Context, u *User) error
 	UpdateProfile(ctx context.Context, userID string, update ProfileUpdate) error
 	UpdatePushToken(ctx context.Context, userID, token string) error
+	// Delete borra la cuenta desde el punto de vista de quien la borra: sus datos
+	// personales dejan de existir y no puede volver a entrar. Por dentro la fila
+	// se anonimiza en vez de borrarse, para no arrastrar el historial contable de
+	// los equipos donde estuvo (ver migración 014).
+	Delete(ctx context.Context, id string) error
 }

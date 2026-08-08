@@ -19,7 +19,7 @@ import (
 )
 
 func newTeamHandler(teamRepo *testutil.MockTeamRepo, memberRepo *testutil.MockMembershipRepo) *handler.TeamHandler {
-	return handler.NewTeamHandler(teamRepo, memberRepo)
+	return handler.NewTeamHandler(teamRepo, memberRepo, nil)
 }
 
 func TestCreateTeam_Success(t *testing.T) {
@@ -77,6 +77,37 @@ func TestCreateTeam_CreatorBecomesManager(t *testing.T) {
 	assert.Equal(t, "user-abc", capturedMembership.UserID)
 	assert.Equal(t, membership.RoleManager, capturedMembership.Role)
 	assert.Equal(t, membership.StatusActive, capturedMembership.Status)
+	// Sin el campo en el body, el manager no ocupa lugar en la plantilla: es lo
+	// que hacía la app antes de que el flag existiera.
+	assert.False(t, capturedMembership.PlaysAsPlayer)
+}
+
+// El que arma el equipo muchas veces también juega. Si lo marca en el alta, su
+// membresía entra a la plantilla: se lo convoca y se le cobra cuota.
+func TestCreateTeam_ManagerWhoAlsoPlays(t *testing.T) {
+	teamRepo := &testutil.MockTeamRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	h := newTeamHandler(teamRepo, memberRepo)
+
+	var capturedMembership *membership.Membership
+	teamRepo.On("Create", mock.Anything, mock.AnythingOfType("*team.Team")).Return(nil)
+	memberRepo.On("Create", mock.Anything, mock.AnythingOfType("*membership.Membership")).
+		Run(func(args mock.Arguments) {
+			capturedMembership = args.Get(1).(*membership.Membership)
+		}).Return(nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-abc")
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams",
+		strings.NewReader(`{"name":"Club","sport_id":"football","category":"Senior","fee_due_day":5,"currency":"CLP","plays_as_player":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Create(c)
+
+	require.NotNil(t, capturedMembership)
+	assert.Equal(t, membership.RoleManager, capturedMembership.Role)
+	assert.True(t, capturedMembership.PlaysAsPlayer)
 }
 
 func TestCreateTeam_ValidationError(t *testing.T) {

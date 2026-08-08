@@ -12,7 +12,9 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
 	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 	"github.com/mbalmaceda/sports-hub-backend/internal/db"
+	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/notification/expo"
 	"github.com/mbalmaceda/sports-hub-backend/internal/repository/postgres"
 )
@@ -50,22 +52,32 @@ func main() {
 	fundsRepo := postgres.NewFundsRepository(pool)
 	onboardingRepo := postgres.NewOnboardingRepository(pool)
 
-	// Notifier
-	notifier := expo.New()
-	_ = notifier
+	// Notifier. Los tokens de push viven en la tabla de usuarios, así que el
+	// repositorio de usuarios es el que sabe a qué dispositivos escribir.
+	notifications := notification.NewService(expo.New(), userRepo, slog.Default())
+
+	// Firebase es opcional: sin credencial el backend arranca igual y solo queda
+	// fuera lo que depende de Firestore.
+	firebaseAuth, err := firebase.New(context.Background(), cfg.FirebaseServiceAccount)
+	if err != nil {
+		slog.Error("firebase error", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("firebase", "enabled", firebaseAuth.Enabled())
 
 	// Handlers
 	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, cfg.JWTSecret)
 	userHandler := handler.NewUserHandler(userRepo)
-	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo)
-	rosterHandler := handler.NewRosterHandler(rosterRepo)
+	firebaseHandler := handler.NewFirebaseHandler(firebaseAuth)
+	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo, firebaseAuth)
+	rosterHandler := handler.NewRosterHandler(rosterRepo, firebaseAuth)
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
 	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo)
 	friendlyHandler := handler.NewFriendlyHandler(friendlyRepo, competitionRepo, matchRepo, rosterRepo)
-	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo)
-	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo)
-	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo)
+	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, notifications, firebaseAuth)
+	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo, notifications)
+	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo, notifications, firebaseAuth)
 
 	// Router
 	r := gin.New()
@@ -96,7 +108,12 @@ func main() {
 	{
 		protected.GET("/users/me", userHandler.Me)
 		protected.PATCH("/users/me", userHandler.UpdateProfile)
+		protected.DELETE("/users/me", userHandler.DeleteAccount)
 		protected.PUT("/users/me/push-token", userHandler.RegisterPushToken)
+
+		// Cambia la sesión de ZPORTS por una de Firebase, para que la app pueda
+		// leer Firestore en vivo sin dejar de ser este backend quien autentica.
+		protected.POST("/auth/firebase-token", firebaseHandler.IssueToken)
 
 		protected.GET("/me/memberships", rosterHandler.ListMine)
 

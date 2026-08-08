@@ -27,31 +27,43 @@ const (
 )
 
 type Membership struct {
-	ID           string
-	UserID       string
-	TeamID       string
-	Role         Role
-	Status       Status
-	JerseyNumber *int
-	Position     string
-	JoinedAt     time.Time
+	ID     string
+	UserID string
+	TeamID string
+	Role   Role
+	// PlaysAsPlayer indica si esta membresía ocupa un lugar en el plantel: se la
+	// convoca a los partidos y se le generan cuotas. Es independiente del rol,
+	// porque el manager que además juega es lo habitual en el fútbol amateur.
+	PlaysAsPlayer bool
+	Status        Status
+	JerseyNumber  *int
+	Position      string
+	JoinedAt      time.Time
+}
+
+// DefaultPlaysAsPlayer resuelve el valor cuando quien crea la membresía no lo
+// dice: todos juegan menos el manager. Es la regla que aplicaba el código antes
+// de que la columna existiera, y la que deja el alta de siempre sin cambios.
+func DefaultPlaysAsPlayer(role Role) bool {
+	return role != RoleManager
 }
 
 // TeamMember es el read model que combina membership + user,
 // mapeado exactamente al tipo TeamMember del mobile.
 type TeamMember struct {
-	MembershipID string    `json:"membership_id"`
-	UserID       string    `json:"user_id"`
-	TeamID       string    `json:"team_id"`
-	FullName     string    `json:"full_name"`
-	AvatarURL    string    `json:"avatar_url,omitempty"`
-	Email        string    `json:"email"`
-	Phone        string    `json:"phone,omitempty"`
-	Role         Role      `json:"role"`
-	JerseyNumber *int      `json:"jersey_number,omitempty"`
-	Position     string    `json:"position,omitempty"`
-	Status       Status    `json:"status"`
-	JoinedAt     time.Time `json:"joined_at"`
+	MembershipID  string    `json:"membership_id"`
+	UserID        string    `json:"user_id"`
+	TeamID        string    `json:"team_id"`
+	FullName      string    `json:"full_name"`
+	AvatarURL     string    `json:"avatar_url,omitempty"`
+	Email         string    `json:"email"`
+	Phone         string    `json:"phone,omitempty"`
+	Role          Role      `json:"role"`
+	PlaysAsPlayer bool      `json:"plays_as_player"`
+	JerseyNumber  *int      `json:"jersey_number,omitempty"`
+	Position      string    `json:"position,omitempty"`
+	Status        Status    `json:"status"`
+	JoinedAt      time.Time `json:"joined_at"`
 }
 
 type Repository interface {

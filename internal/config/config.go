@@ -15,11 +15,19 @@ var defaultCORSAllowedOrigins = []string{
 }
 
 type Config struct {
-	Port               string
-	DatabaseURL        string
-	JWTSecret          string
-	CORSEnabled        bool
-	CORSAllowedOrigins []string
+	Port        string
+	DatabaseURL string
+	JWTSecret   string
+	// FirebaseServiceAccount es el JSON de la cuenta de servicio, entero, tal
+	// como lo entrega la consola de Firebase. Va como variable y no como archivo
+	// porque en Fly los secretos son variables de entorno.
+	//
+	// Es opcional: sin ella el backend arranca igual y lo único que no funciona
+	// es lo que necesita Firebase. Exigirla dejaría la API caída por una función
+	// que todavía no está en uso.
+	FirebaseServiceAccount string
+	CORSEnabled            bool
+	CORSAllowedOrigins     []string
 }
 
 func Load() (Config, error) {
@@ -58,10 +66,11 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		Port:               port,
-		DatabaseURL:        dbURL,
-		JWTSecret:          jwtSecret,
-		CORSEnabled:        corsEnabled,
-		CORSAllowedOrigins: corsAllowedOrigins,
+		Port:                   port,
+		DatabaseURL:            dbURL,
+		JWTSecret:              jwtSecret,
+		FirebaseServiceAccount: os.Getenv("FIREBASE_SERVICE_ACCOUNT"),
+		CORSEnabled:            corsEnabled,
+		CORSAllowedOrigins:     corsAllowedOrigins,
 	}, nil
 }

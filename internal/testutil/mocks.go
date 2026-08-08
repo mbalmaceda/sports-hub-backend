@@ -46,6 +46,10 @@ func (m *MockUserRepo) UpdatePushToken(ctx context.Context, userID, token string
 	return m.Called(ctx, userID, token).Error(0)
 }
 
+func (m *MockUserRepo) Delete(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
+
 // --- RefreshTokenRepository ---
 
 type MockTokenRepo struct{ mock.Mock }

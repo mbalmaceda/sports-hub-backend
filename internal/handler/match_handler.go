@@ -9,19 +9,30 @@ import (
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
 )
 
 type MatchHandler struct {
-	matches     match.Repository
-	memberships membership.Repository
-	authz       teamAuthorizer
+	matches       match.Repository
+	memberships   membership.Repository
+	notifications *notification.Service
+	firebase      *firebase.Firebase
+	authz         teamAuthorizer
 }
 
-func NewMatchHandler(matches match.Repository, memberships membership.Repository) *MatchHandler {
+func NewMatchHandler(
+	matches match.Repository,
+	memberships membership.Repository,
+	notifications *notification.Service,
+	fb *firebase.Firebase,
+) *MatchHandler {
 	return &MatchHandler{
-		matches:     matches,
-		memberships: memberships,
-		authz:       teamAuthorizer{memberships: memberships},
+		matches:       matches,
+		memberships:   memberships,
+		notifications: notifications,
+		firebase:      fb,
+		authz:         teamAuthorizer{memberships: memberships},
 	}
 }
 
@@ -202,6 +213,34 @@ func (h *MatchHandler) CallUp(c *gin.Context) {
 		return
 	}
 
+	// Proyección a Firestore: es lo que hace que la citación aparezca en el
+	// teléfono del resto del plantel sin que nadie recargue nada.
+	userByMembership := make(map[string]string, len(members))
+	for _, member := range members {
+		userByMembership[member.MembershipID] = member.UserID
+	}
+	projected := make([]firebase.Callup, 0, len(callups))
+	for _, cu := range callups {
+		if userID, ok := userByMembership[cu.MembershipID]; ok {
+			projected = append(projected, firebase.Callup{
+				TeamID:  req.TeamID,
+				MatchID: m.ID,
+				UserID:  userID,
+				Status:  string(cu.Status),
+			})
+		}
+	}
+	h.firebase.SyncCallupsAsync(projected)
+
+	// Es el aviso que más se espera de la app: hasta ahora había que perseguir
+	// uno por uno para saber quién va.
+	h.notifications.NotifyAsync(
+		userIDsForMemberships(members, req.MembershipIDs),
+		"Te convocaron",
+		"Estás citado para un partido. Toca para confirmar si vas.",
+		map[string]string{"type": "callup_created", "match_id": m.ID},
+	)
+
 	c.JSON(http.StatusCreated, callups)
 }
 
@@ -244,6 +283,16 @@ func (h *MatchHandler) RespondToCallup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save your answer"})
 		return
 	}
+
+	// La respuesta pasa por acá y no se escribe desde el teléfono: Postgres es
+	// la autoridad y Firestore la copia. El round-trip extra cuesta
+	// milisegundos y evita que las dos versiones puedan discrepar.
+	h.firebase.SyncCallupsAsync([]firebase.Callup{{
+		TeamID:  req.TeamID,
+		MatchID: m.ID,
+		UserID:  me.UserID,
+		Status:  string(callup.Status),
+	}})
 
 	c.JSON(http.StatusOK, callup)
 }

@@ -9,16 +9,23 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 )
 
 type TeamHandler struct {
 	repo        team.Repository
 	memberships membership.Repository
+	firebase    *firebase.Firebase
 	authz       teamAuthorizer
 }
 
-func NewTeamHandler(repo team.Repository, memberships membership.Repository) *TeamHandler {
-	return &TeamHandler{repo: repo, memberships: memberships, authz: teamAuthorizer{memberships: memberships}}
+func NewTeamHandler(repo team.Repository, memberships membership.Repository, fb *firebase.Firebase) *TeamHandler {
+	return &TeamHandler{
+		repo:        repo,
+		memberships: memberships,
+		firebase:    fb,
+		authz:       teamAuthorizer{memberships: memberships},
+	}
 }
 
 // Create POST /teams
@@ -39,6 +46,10 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		FeeAmount int64  `json:"fee_amount"`
 		FeeDueDay int    `json:"fee_due_day" binding:"min=1,max=31"`
 		Currency  string `json:"currency"   binding:"required"`
+		// Puntero para distinguir "no lo mandó" de "dijo que no juega": un
+		// cliente viejo que omita el campo tiene que seguir creando un manager
+		// que no ocupa lugar en la plantilla.
+		PlaysAsPlayer *bool `json:"plays_as_player"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -65,16 +76,31 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		return
 	}
 
+	playsAsPlayer := membership.DefaultPlaysAsPlayer(membership.RoleManager)
+	if req.PlaysAsPlayer != nil {
+		playsAsPlayer = *req.PlaysAsPlayer
+	}
+
 	m := &membership.Membership{
-		UserID: claims.UserID,
-		TeamID: t.ID,
-		Role:   membership.RoleManager,
-		Status: membership.StatusActive,
+		UserID:        claims.UserID,
+		TeamID:        t.ID,
+		Role:          membership.RoleManager,
+		PlaysAsPlayer: playsAsPlayer,
+		Status:        membership.StatusActive,
 	}
 	if err := h.memberships.Create(c.Request.Context(), m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "team created but could not assign manager membership"})
 		return
 	}
+
+	// Sin esto, quien acaba de crear el equipo no existe para las reglas de
+	// Firestore y no podría leer ni su propio plantel.
+	h.firebase.SyncMembershipAsync(firebase.Membership{
+		TeamID: m.TeamID,
+		UserID: m.UserID,
+		Role:   string(m.Role),
+		Status: string(m.Status),
+	})
 
 	c.JSON(http.StatusCreated, t)
 }

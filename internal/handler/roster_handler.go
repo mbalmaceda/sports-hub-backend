@@ -1,21 +1,47 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 )
 
 type RosterHandler struct {
-	repo membership.Repository
+	repo     membership.Repository
+	firebase *firebase.Firebase
 }
 
-func NewRosterHandler(repo membership.Repository) *RosterHandler {
-	return &RosterHandler{repo: repo}
+func NewRosterHandler(repo membership.Repository, fb *firebase.Firebase) *RosterHandler {
+	return &RosterHandler{repo: repo, firebase: fb}
+}
+
+// syncMirror refleja en Firestore lo que quedó guardado en Postgres.
+//
+// Vuelve a leer la membresía en vez de reutilizar lo que traía el request: el
+// espejo tiene que copiar lo que de verdad se guardó, no lo que se pidió
+// guardar. Sin Firebase configurado no hace nada.
+func (h *RosterHandler) syncMirror(ctx context.Context, membershipID string) {
+	if !h.firebase.Enabled() {
+		return
+	}
+	member, err := h.repo.GetMemberByID(ctx, membershipID)
+	if err != nil {
+		slog.Error("mirror: could not read membership", "error", err, "membership_id", membershipID)
+		return
+	}
+	h.firebase.SyncMembershipAsync(firebase.Membership{
+		TeamID: member.TeamID,
+		UserID: member.UserID,
+		Role:   string(member.Role),
+		Status: string(member.Status),
+	})
 }
 
 func (h *RosterHandler) ListByTeam(c *gin.Context) {
@@ -66,10 +92,11 @@ func (h *RosterHandler) GetMember(c *gin.Context) {
 
 func (h *RosterHandler) AddMember(c *gin.Context) {
 	var req struct {
-		UserID       string          `json:"user_id"       binding:"required"`
-		Role         membership.Role `json:"role"`
-		JerseyNumber *int            `json:"jersey_number"`
-		Position     string          `json:"position"`
+		UserID        string          `json:"user_id"       binding:"required"`
+		Role          membership.Role `json:"role"`
+		PlaysAsPlayer *bool           `json:"plays_as_player"`
+		JerseyNumber  *int            `json:"jersey_number"`
+		Position      string          `json:"position"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -92,18 +119,26 @@ func (h *RosterHandler) AddMember(c *gin.Context) {
 		return
 	}
 
+	playsAsPlayer := membership.DefaultPlaysAsPlayer(role)
+	if req.PlaysAsPlayer != nil {
+		playsAsPlayer = *req.PlaysAsPlayer
+	}
+
 	m := &membership.Membership{
-		UserID:       req.UserID,
-		TeamID:       c.Param("id"),
-		Role:         role,
-		Status:       membership.StatusActive,
-		JerseyNumber: req.JerseyNumber,
-		Position:     req.Position,
+		UserID:        req.UserID,
+		TeamID:        c.Param("id"),
+		Role:          role,
+		PlaysAsPlayer: playsAsPlayer,
+		Status:        membership.StatusActive,
+		JerseyNumber:  req.JerseyNumber,
+		Position:      req.Position,
 	}
 	if err := h.repo.Create(c.Request.Context(), m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not add member"})
 		return
 	}
+
+	h.syncMirror(c.Request.Context(), m.ID)
 
 	// Retorna el TeamMember completo (con datos del user)
 	member, err := h.repo.GetMemberByID(c.Request.Context(), m.ID)
@@ -127,6 +162,11 @@ func (h *RosterHandler) UpdateStatus(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not update status"})
 		return
 	}
+
+	// Dar de baja a alguien tiene que sacarle el acceso a Firestore, no solo
+	// esconderle el equipo en la app.
+	h.syncMirror(c.Request.Context(), c.Param("membershipId"))
+
 	c.JSON(http.StatusOK, gin.H{"status": "updated"})
 }
 
@@ -150,6 +190,10 @@ func (h *RosterHandler) UpdateRole(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not update role"})
 		return
 	}
+
+	// El motivo de que los roles no viajen en el token: acá el cambio llega al
+	// espejo enseguida, en vez de esperar a que expire la sesión de nadie.
+	h.syncMirror(c.Request.Context(), c.Param("membershipId"))
 
 	member, err := h.repo.GetMemberByID(c.Request.Context(), c.Param("membershipId"))
 	if err != nil {

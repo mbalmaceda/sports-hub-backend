@@ -1,0 +1,12 @@
+-- Borrado de cuenta, requisito de Google Play para toda app que permite
+-- registrarse desde el teléfono.
+--
+-- La fila no se borra. `payments.payer_id` y sobre todo `payments.recorded_by`
+-- apuntan a users con ON DELETE CASCADE, así que un DELETE físico del tesorero
+-- se llevaría por delante todos los pagos que él registró de OTROS jugadores y
+-- dejaría la contabilidad del equipo con agujeros. En vez de eso se anonimiza la
+-- fila: los datos personales desaparecen y el historial del equipo queda en pie.
+--
+-- `deleted_at` es lo que distingue una cuenta borrada de una viva, para que el
+-- login y la sesión la rechacen aunque quede un token sin expirar dando vueltas.
+ALTER TABLE users ADD COLUMN deleted_at TIMESTAMPTZ;

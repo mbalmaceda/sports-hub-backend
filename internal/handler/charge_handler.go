@@ -12,15 +12,17 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/funds"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
 )
 
 type ChargeHandler struct {
-	charges      charge.Repository
-	competitions competition.Repository
-	matches      match.Repository
-	memberships  membership.Repository
-	funds        funds.Repository
-	authz        teamAuthorizer
+	charges       charge.Repository
+	competitions  competition.Repository
+	matches       match.Repository
+	memberships   membership.Repository
+	funds         funds.Repository
+	notifications *notification.Service
+	authz         teamAuthorizer
 }
 
 func NewChargeHandler(
@@ -29,14 +31,16 @@ func NewChargeHandler(
 	matches match.Repository,
 	memberships membership.Repository,
 	funds funds.Repository,
+	notifications *notification.Service,
 ) *ChargeHandler {
 	return &ChargeHandler{
-		charges:      charges,
-		competitions: competitions,
-		matches:      matches,
-		memberships:  memberships,
-		funds:        funds,
-		authz:        teamAuthorizer{memberships: memberships},
+		charges:       charges,
+		competitions:  competitions,
+		matches:       matches,
+		memberships:   memberships,
+		funds:         funds,
+		notifications: notifications,
+		authz:         teamAuthorizer{memberships: memberships},
 	}
 }
 
@@ -215,6 +219,15 @@ func (h *ChargeHandler) Split(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not record team funds"})
 		return
 	}
+
+	// Se avisa después de guardar y sin esperar el envío: el reparto ya está
+	// hecho y que Expo tarde o falle no cambia nada de lo anterior.
+	h.notifications.NotifyAsync(
+		userIDsForMemberships(members, payers),
+		"Nuevo cobro",
+		"Se repartió el costo de la cancha. Toca para ver tu parte.",
+		map[string]string{"type": "charge_created", "team_id": teamID},
+	)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"charges":    charges,
