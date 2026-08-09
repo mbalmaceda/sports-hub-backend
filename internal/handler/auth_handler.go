@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -46,6 +45,14 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// El RUT sigue siendo opcional acá, pero si viene tiene que ser uno de
+	// verdad: es la llave con la que después un manager busca a esta persona
+	// para invitarla, y un RUT inventado la deja imposible de encontrar. La app
+	// ya lo valida, así que esto ataja a cualquier otro cliente.
+	if req.TaxID != "" && !user.IsValidRUT(req.TaxID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tax_id is not a valid RUT"})
+		return
+	}
 	if !validDominantSide(req.DominantSide) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "dominant_side must be one of right, left, both"})
 		return
@@ -61,7 +68,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Name:          req.Name,
 		Email:         req.Email,
 		PasswordHash:  string(hash),
-		TaxID:         normalizeTaxID(req.TaxID),
+		TaxID:         user.NormalizeRUT(req.TaxID),
 		FavoriteSport: req.FavoriteSport,
 		HeightCm:      req.HeightCm,
 		WeightKg:      req.WeightKg,
@@ -209,12 +216,6 @@ func (h *AuthHandler) issueTokens(ctx context.Context, u *user.User) (accessToke
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
-}
-
-// normalizeTaxID deja el RUT en forma canónica (solo dígitos y dígito verificador),
-// así el índice único detecta duplicados aunque lleguen con puntos o guiones.
-func normalizeTaxID(value string) string {
-	return strings.NewReplacer(".", "", "-", "", " ", "").Replace(strings.TrimSpace(value))
 }
 
 func validDominantSide(v string) bool {

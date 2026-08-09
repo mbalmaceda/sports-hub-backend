@@ -92,7 +92,7 @@ func TestRegister_WithProfile(t *testing.T) {
 
 	userRepo.On("Create", mock.Anything, mock.MatchedBy(func(u *user.User) bool {
 		return u.Name == "Mirko" &&
-			u.TaxID == "123456789" &&
+			u.TaxID == "123456785" &&
 			u.FavoriteSport == "football" &&
 			u.City == "Santiago" &&
 			u.DominantSide == "right" &&
@@ -107,7 +107,7 @@ func TestRegister_WithProfile(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/auth/register",
 		strings.NewReader(`{
 			"name":"Mirko","email":"mirko@test.com","password":"secret123",
-			"tax_id":"12.345.678-9","favorite_sport":"football","height_cm":175,
+			"tax_id":"12.345.678-5","favorite_sport":"football","height_cm":175,
 			"weight_kg":70.5,"birth_date":"1998-07-12","city":"Santiago","dominant_side":"right"
 		}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -115,6 +115,27 @@ func TestRegister_WithProfile(t *testing.T) {
 	h.Register(c)
 
 	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+func TestRegister_InvalidTaxID(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	h := newAuthHandler(userRepo, &testutil.MockTokenRepo{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	// El verificador de 12.345.678 es 5, no 9.
+	c.Request = httptest.NewRequest(http.MethodPost, "/auth/register",
+		strings.NewReader(`{"name":"Test","email":"t@test.com","password":"secret123","tax_id":"12.345.678-9"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Register(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "tax_id is not a valid RUT", body["error"])
+	// Con el RUT malo no se llega a crear nada.
+	userRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 }
 
 func TestRegister_DuplicateTaxID(t *testing.T) {
@@ -127,7 +148,7 @@ func TestRegister_DuplicateTaxID(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/auth/register",
-		strings.NewReader(`{"name":"Test","email":"dup@test.com","password":"secret123","tax_id":"12345678-9"}`))
+		strings.NewReader(`{"name":"Test","email":"dup@test.com","password":"secret123","tax_id":"12345678-5"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	h.Register(c)

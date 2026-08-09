@@ -71,7 +71,31 @@ type Competition struct {
 	Venue           string     `json:"venue,omitempty"`
 	PlayersPerSide  *int       `json:"players_per_side,omitempty"`
 	VenueCost       *VenueCost `json:"venue_cost,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
+	/*
+		PlayerShare es cuánto le toca poner a cada jugador, en la moneda de
+		VenueCost. Se calcula una sola vez, al crear la competencia, y desde ahí
+		se lee: es el número que el asistente le prometió al manager, y
+		derivarlo en cada lectura dejaría que un cambio de fórmula alterara en
+		silencio lo que ya se le cobró a la gente.
+
+		Nulo cuando no hay costo de lugar o no se configuró la nómina.
+	*/
+	PlayerShare *int64    `json:"player_share,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// ResolvePlayerShare es la cuota por jugador: el lugar repartido entre los que
+// entran en cancha por los dos lados. Divide hacia arriba para que la suma de
+// las partes nunca quede corta contra el costo real.
+//
+// Se usa solo al crear: después, el valor vive en PlayerShare.
+func (c *Competition) ResolvePlayerShare() *int64 {
+	if c.VenueCost == nil || c.VenueCost.Amount <= 0 || c.PlayersPerSide == nil || *c.PlayersPerSide <= 0 {
+		return nil
+	}
+	parts := int64(*c.PlayersPerSide) * 2
+	share := (c.VenueCost.Amount + parts - 1) / parts
+	return &share
 }
 
 type Entry struct {
@@ -101,6 +125,16 @@ type Repository interface {
 	ListByTeam(ctx context.Context, teamID string) ([]*Competition, error)
 	Create(ctx context.Context, c *Competition) error
 	UpdateStatus(ctx context.Context, id string, status Status) error
+	/*
+		UpdateSchedule fija la fecha y el lugar acordados.
+
+		La competencia nace con la primera propuesta del amistoso, pero recién
+		al aceptar se sabe cuál quedó: con una contraoferta de por medio, la
+		original ya no es la buena. Sin esto, `start_at` queda con una fecha que
+		nadie va a jugar, y el móvil la usa para decidir qué es una competencia
+		activa y qué ya pasó.
+	*/
+	UpdateSchedule(ctx context.Context, id string, startAt time.Time, venue string) error
 
 	ListEntries(ctx context.Context, competitionID string) ([]*Entry, error)
 	// UpsertEntry crea la entrada o actualiza su estado si el equipo ya estaba.

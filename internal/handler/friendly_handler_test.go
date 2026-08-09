@@ -125,6 +125,9 @@ func TestAcceptFriendly_OpponentAcceptsAndMatchIsCreated(t *testing.T) {
 	// Los dos equipos quedan activos en la competencia.
 	cr.On("UpsertEntry", mock.Anything, mock.Anything).Return(nil).Twice()
 	cr.On("UpdateStatus", mock.Anything, ch.CompetitionID, mock.Anything).Return(nil)
+	// La competencia se alinea con la propuesta aceptada: si hubo contraoferta,
+	// la fecha con la que nació ya no es la que se juega.
+	cr.On("UpdateSchedule", mock.Anything, ch.CompetitionID, kickoff, "Complejo Municipal").Return(nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -137,6 +140,8 @@ func TestAcceptFriendly_OpponentAcceptsAndMatchIsCreated(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	fr.AssertExpectations(t)
 	mr.AssertExpectations(t)
+	// Sin esto, que la competencia nunca se reagendara pasaría desapercibido.
+	cr.AssertExpectations(t)
 }
 
 // Un jugador del equipo rival no puede aceptar por su equipo: hace falta manager.

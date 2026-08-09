@@ -47,6 +47,19 @@ func (m *MockChargeRepo) CreateForSource(ctx context.Context, in charge.CreateIn
 	return args.Get(0).([]*charge.Charge), args.Error(1)
 }
 
+func (m *MockChargeRepo) EnsureForMembership(ctx context.Context, in charge.EnsureInput) (*charge.Charge, error) {
+	args := m.Called(ctx, in)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*charge.Charge), args.Error(1)
+}
+
+func (m *MockChargeRepo) RemovePendingForMembership(ctx context.Context, source charge.Source, membershipID string) error {
+	args := m.Called(ctx, source, membershipID)
+	return args.Error(0)
+}
+
 func (m *MockChargeRepo) SubmitReceipt(ctx context.Context, id, receiptURL string, at time.Time) (*charge.Charge, error) {
 	args := m.Called(ctx, id, receiptURL)
 	if args.Get(0) == nil {

@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/charge"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
@@ -33,7 +35,9 @@ func confirmedMatch() *match.Match {
 func TestCallUp_RejectsPlayersFromAnotherTeam(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr, nil, nil)
+	compr := &testutil.MockCompetitionRepo{}
+	chr := &testutil.MockChargeRepo{}
+	h := handler.NewMatchHandler(mr, memr, compr, chr, nil, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)
@@ -62,7 +66,9 @@ func TestCallUp_RejectsPlayersFromAnotherTeam(t *testing.T) {
 func TestCallUp_PlayerCannotCallUp(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr, nil, nil)
+	compr := &testutil.MockCompetitionRepo{}
+	chr := &testutil.MockChargeRepo{}
+	h := handler.NewMatchHandler(mr, memr, compr, chr, nil, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)
@@ -90,7 +96,9 @@ func TestCallUp_PlayerCannotCallUp(t *testing.T) {
 func TestRespondToCallup_UsesMembershipFromToken(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr, nil, nil)
+	compr := &testutil.MockCompetitionRepo{}
+	chr := &testutil.MockChargeRepo{}
+	h := handler.NewMatchHandler(mr, memr, compr, chr, nil, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)
@@ -102,6 +110,21 @@ func TestRespondToCallup_UsesMembershipFromToken(t *testing.T) {
 	mr.On("Respond", mock.Anything, m.ID, "m-mia", true).Return(&match.Callup{
 		ID: "cu-1", MatchID: m.ID, MembershipID: "m-mia", Status: match.CallupConfirmed,
 	}, nil)
+	// Aceptar deja creado su cargo por la cancha, con la cuota que quedó fijada
+	// al crear la competencia. Y también con la membresía del token.
+	share := int64(2000)
+	compr.On("FindByID", mock.Anything, m.CompetitionID).Return(&competition.Competition{
+		ID:          m.CompetitionID,
+		VenueCost:   &competition.VenueCost{Amount: 28000, Currency: "CLP"},
+		PlayerShare: &share,
+	}, nil)
+	chr.On("EnsureForMembership", mock.Anything, charge.EnsureInput{
+		TeamID:       homeTeam,
+		MembershipID: "m-mia",
+		Source:       charge.Source{Type: charge.SourceMatchCost, ID: m.CompetitionID},
+		Amount:       share,
+		Currency:     "CLP",
+	}).Return(&charge.Charge{ID: "ch-1"}, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -121,7 +144,9 @@ func TestRespondToCallup_UsesMembershipFromToken(t *testing.T) {
 func TestCallUp_RejectsTeamNotInMatch(t *testing.T) {
 	mr := &testutil.MockMatchRepo{}
 	memr := &testutil.MockMembershipRepo{}
-	h := handler.NewMatchHandler(mr, memr, nil, nil)
+	compr := &testutil.MockCompetitionRepo{}
+	chr := &testutil.MockChargeRepo{}
+	h := handler.NewMatchHandler(mr, memr, compr, chr, nil, nil)
 
 	m := confirmedMatch()
 	mr.On("FindByID", mock.Anything, m.ID).Return(m, nil)

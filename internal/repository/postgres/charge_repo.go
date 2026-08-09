@@ -145,6 +145,50 @@ func (r *ChargeRepository) CreateForSource(ctx context.Context, in charge.Create
 
 // SubmitReceipt exige que el cargo esté pendiente. El WHERE lo hace atómico:
 // dos envíos simultáneos y el segundo no afecta filas.
+// EnsureForMembership crea el cargo de una membresía si todavía no existe.
+//
+// El ON CONFLICT DO NOTHING más el SELECT de vuelta es lo que lo hace
+// idempotente sin pisar nada: dos toques seguidos de "¡Voy!" no duplican el
+// cargo, y si el manager ya lo había repartido con otro monto, gana el que ya
+// estaba —el suyo es el número acordado, no este.
+func (r *ChargeRepository) EnsureForMembership(
+	ctx context.Context, in charge.EnsureInput,
+) (*charge.Charge, error) {
+	const insert = `
+		INSERT INTO charges
+			(team_id, membership_id, source_type, source_id, amount, currency, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+		ON CONFLICT (source_type, source_id, membership_id) DO NOTHING`
+	if _, err := r.pool.Exec(ctx, insert,
+		in.TeamID, in.MembershipID, in.Source.Type, in.Source.ID, in.Amount, in.Currency,
+	); err != nil {
+		return nil, fmt.Errorf("charge.EnsureForMembership: insert: %w", err)
+	}
+
+	q := `SELECT` + chargeColumns + `
+		FROM charges
+		WHERE source_type = $1 AND source_id = $2 AND membership_id = $3`
+	ch, err := scanCharge(r.pool.QueryRow(ctx, q, in.Source.Type, in.Source.ID, in.MembershipID))
+	if err != nil {
+		return nil, fmt.Errorf("charge.EnsureForMembership: select: %w", err)
+	}
+	return ch, nil
+}
+
+// RemovePendingForMembership saca el cargo pendiente de una membresía. El
+// `status = 'pending'` del WHERE es el que protege lo ya enviado o pagado.
+func (r *ChargeRepository) RemovePendingForMembership(
+	ctx context.Context, source charge.Source, membershipID string,
+) error {
+	const q = `
+		DELETE FROM charges
+		WHERE source_type = $1 AND source_id = $2 AND membership_id = $3 AND status = 'pending'`
+	if _, err := r.pool.Exec(ctx, q, source.Type, source.ID, membershipID); err != nil {
+		return fmt.Errorf("charge.RemovePendingForMembership: %w", err)
+	}
+	return nil
+}
+
 func (r *ChargeRepository) SubmitReceipt(ctx context.Context, id, receiptURL string, at time.Time) (*charge.Charge, error) {
 	q := `UPDATE charges
 		SET receipt_url = $1, status = 'submitted', submitted_at = $2

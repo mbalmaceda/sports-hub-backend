@@ -137,7 +137,7 @@ func TestUpdateProfile_WithSportsProfile(t *testing.T) {
 
 	repo.On("UpdateProfile", mock.Anything, "user-1", user.ProfileUpdate{
 		Name:          "",
-		TaxID:         "123456789",
+		TaxID:         "123456785",
 		Phone:         "",
 		AvatarURL:     "",
 		FavoriteSport: "football",
@@ -156,7 +156,7 @@ func TestUpdateProfile_WithSportsProfile(t *testing.T) {
 	contextWithClaims(c, "user-1")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/users/me",
 		strings.NewReader(`{
-			"tax_id":"12.345.678-9","favorite_sport":"football","height_cm":175,
+			"tax_id":"12.345.678-5","favorite_sport":"football","height_cm":175,
 			"weight_kg":70.5,"birth_date":"1998-07-12","city":"Santiago","dominant_side":"right"
 		}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -171,6 +171,26 @@ func TestUpdateProfile_WithSportsProfile(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
+func TestUpdateProfile_InvalidTaxID(t *testing.T) {
+	repo := &testutil.MockUserRepo{}
+	h := handler.NewUserHandler(repo)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "user-1")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/users/me",
+		strings.NewReader(`{"tax_id":"12.345.678-9"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateProfile(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "tax_id is not a valid RUT", body["error"])
+	repo.AssertNotCalled(t, "UpdateProfile", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestUpdateProfile_DuplicateTaxID(t *testing.T) {
 	repo := &testutil.MockUserRepo{}
 	h := handler.NewUserHandler(repo)
@@ -182,7 +202,7 @@ func TestUpdateProfile_DuplicateTaxID(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	contextWithClaims(c, "user-1")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/users/me",
-		strings.NewReader(`{"tax_id":"12345678-9"}`))
+		strings.NewReader(`{"tax_id":"12345678-5"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	h.UpdateProfile(c)

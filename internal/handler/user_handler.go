@@ -52,6 +52,11 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// Vacío es "no lo toques", así que solo se valida cuando viene con algo.
+	if req.TaxID != "" && !user.IsValidRUT(req.TaxID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tax_id is not a valid RUT"})
+		return
+	}
 	if !validDominantSide(req.DominantSide) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "dominant_side must be one of right, left, both"})
 		return
@@ -59,7 +64,7 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 
 	if err := h.repo.UpdateProfile(c.Request.Context(), claims.UserID, user.ProfileUpdate{
 		Name:          req.Name,
-		TaxID:         normalizeTaxID(req.TaxID),
+		TaxID:         user.NormalizeRUT(req.TaxID),
 		Phone:         req.Phone,
 		AvatarURL:     req.AvatarURL,
 		FavoriteSport: req.FavoriteSport,

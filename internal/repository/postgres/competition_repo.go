@@ -22,7 +22,7 @@ func NewCompetitionRepository(pool *pgxpool.Pool) *CompetitionRepository {
 
 const competitionColumns = `
 	id, sport_id, type, name, organizer_team_id, status, start_at, end_at,
-	venue, players_per_side, venue_cost_amount, venue_cost_currency, created_at`
+	venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share, created_at`
 
 func scanCompetition(row pgx.Row) (*competition.Competition, error) {
 	c := &competition.Competition{}
@@ -31,7 +31,8 @@ func scanCompetition(row pgx.Row) (*competition.Competition, error) {
 
 	err := row.Scan(
 		&c.ID, &c.SportID, &c.Type, &c.Name, &c.OrganizerTeamID, &c.Status,
-		&c.StartAt, &c.EndAt, &venue, &c.PlayersPerSide, &amount, &currency, &c.CreatedAt,
+		&c.StartAt, &c.EndAt, &venue, &c.PlayersPerSide, &amount, &currency,
+		&c.PlayerShare, &c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -96,8 +97,8 @@ func (r *CompetitionRepository) Create(ctx context.Context, c *competition.Compe
 	const q = `
 		INSERT INTO competitions
 			(sport_id, type, name, organizer_team_id, status, start_at, end_at,
-			 venue, players_per_side, venue_cost_amount, venue_cost_currency)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			 venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, created_at`
 
 	var amount *int64
@@ -107,9 +108,14 @@ func (r *CompetitionRepository) Create(ctx context.Context, c *competition.Compe
 		currency = &c.VenueCost.Currency
 	}
 
+	// La cuota por jugador se resuelve acá y no en el handler: los amistosos y
+	// los torneos se crean por caminos distintos y los dos pasan por este
+	// método, así que es el único punto donde no se puede olvidar.
+	c.PlayerShare = c.ResolvePlayerShare()
+
 	err := r.pool.QueryRow(ctx, q,
 		c.SportID, c.Type, c.Name, c.OrganizerTeamID, c.Status, c.StartAt, c.EndAt,
-		nullIfEmpty(c.Venue), c.PlayersPerSide, amount, currency,
+		nullIfEmpty(c.Venue), c.PlayersPerSide, amount, currency, c.PlayerShare,
 	).Scan(&c.ID, &c.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("competition.Create: %w", err)
@@ -121,6 +127,16 @@ func (r *CompetitionRepository) UpdateStatus(ctx context.Context, id string, sta
 	const q = `UPDATE competitions SET status = $1 WHERE id = $2`
 	if _, err := r.pool.Exec(ctx, q, status, id); err != nil {
 		return fmt.Errorf("competition.UpdateStatus: %w", err)
+	}
+	return nil
+}
+
+func (r *CompetitionRepository) UpdateSchedule(
+	ctx context.Context, id string, startAt time.Time, venue string,
+) error {
+	const q = `UPDATE competitions SET start_at = $1, venue = $2 WHERE id = $3`
+	if _, err := r.pool.Exec(ctx, q, startAt, nullIfEmpty(venue), id); err != nil {
+		return fmt.Errorf("competition.UpdateSchedule: %w", err)
 	}
 	return nil
 }

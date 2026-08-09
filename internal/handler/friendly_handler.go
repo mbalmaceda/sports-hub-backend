@@ -226,6 +226,17 @@ func (h *FriendlyHandler) Accept(c *gin.Context) {
 		return
 	}
 
+	// La competencia se creó con la primera propuesta; si hubo contraoferta, esa
+	// fecha ya no es la que se juega. Se alinea con la del partido recién creado
+	// porque es la que el móvil lee para decidir si la competencia sigue activa
+	// o ya pasó al historial.
+	if err := h.competitions.UpdateSchedule(
+		c.Request.Context(), ch.CompetitionID, latest.ProposedStartAt, latest.ProposedVenue,
+	); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "friendly accepted but the schedule could not be saved"})
+		return
+	}
+
 	// Los dos equipos quedan activos: en un amistoso ambos son participantes,
 	// no organizador e invitado como en un torneo.
 	now := time.Now()

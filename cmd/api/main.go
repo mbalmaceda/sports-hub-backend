@@ -75,7 +75,7 @@ func main() {
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
 	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo)
 	friendlyHandler := handler.NewFriendlyHandler(friendlyRepo, competitionRepo, matchRepo, rosterRepo)
-	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, notifications, firebaseAuth)
+	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, competitionRepo, chargeRepo, notifications, firebaseAuth)
 	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo, notifications)
 	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo, notifications, firebaseAuth)
 

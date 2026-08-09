@@ -142,6 +142,14 @@ func (h *ChargeHandler) Split(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "this competition has no squad size configured"})
 		return
 	}
+	// La cuota se guardó al crear la competencia. Si falta con costo y nómina
+	// cargados, es una fila anterior a la migración 015 que no se completó, y
+	// repartir con un número recalculado podría no coincidir con lo que ya se
+	// le cobró a quienes aceptaron antes.
+	if comp.PlayerShare == nil || *comp.PlayerShare <= 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "this competition has no per-player share on file"})
+		return
+	}
 
 	// El partido es el que tiene la convocatoria. Repartir antes de que exista
 	// significaría cobrarle a gente que todavía nadie citó.
@@ -197,7 +205,7 @@ func (h *ChargeHandler) Split(c *gin.Context) {
 		return
 	}
 
-	split := charge.SplitMatchCost(comp.VenueCost.Amount, *comp.PlayersPerSide, payers)
+	split := charge.SplitMatchCostWithShare(comp.VenueCost.Amount, *comp.PlayerShare, payers)
 
 	charges, err := h.charges.CreateForSource(c.Request.Context(), charge.CreateInput{
 		TeamID:   teamID,

@@ -75,6 +75,20 @@ type CreateInput struct {
 	Lines    []Line
 }
 
+// EnsureInput crea el cargo de UNA membresía sin tocar los del resto.
+//
+// Existe aparte de CreateInput porque los dos momentos son distintos: el
+// reparto del manager rehace el conjunto entero, mientras que un jugador que
+// acepta la citación solo agrega el suyo. Usar el reparto para eso borraría
+// los cargos pendientes de sus compañeros.
+type EnsureInput struct {
+	TeamID       string
+	MembershipID string
+	Source       Source
+	Amount       int64
+	Currency     string
+}
+
 // MatchCostSplit es el reparto del costo de un lugar entre los jugadores que van.
 type MatchCostSplit struct {
 	Lines []Line
@@ -109,14 +123,37 @@ El precio por cabeza es fijo —lugar ÷ (jugadores por equipo × 2)— porque c
 equipo cubre la mitad del lugar. Si confirman más que la nómina, lo recaudado
 pasa esa mitad y el excedente queda para el equipo.
 */
+// PerPlayerShare es la cuota fija por jugador: el lugar dividido entre los que
+// entran en cancha por los dos lados.
+//
+// Queda determinada al crear la competencia y no depende de cuántos confirmen:
+// con un lugar de $28.000 y 7 por equipo son $2.000, vayan 8 o 14. Por eso se
+// le puede cobrar a un jugador apenas acepta la citación, sin esperar a que el
+// manager reparta. Devuelve 0 si falta el costo o la nómina.
+func PerPlayerShare(totalAmount int64, playersPerSide int) int64 {
+	if totalAmount <= 0 || playersPerSide <= 0 {
+		return 0
+	}
+	return ceilDiv(totalAmount, int64(playersPerSide)*2)
+}
+
 func SplitMatchCost(totalAmount int64, playersPerSide int, payerMembershipIDs []string) MatchCostSplit {
+	return SplitMatchCostWithShare(totalAmount, PerPlayerShare(totalAmount, playersPerSide), payerMembershipIDs)
+}
+
+// SplitMatchCostWithShare reparte usando la cuota que ya está guardada en la
+// competencia, en vez de volver a derivarla del costo y la nómina.
+//
+// Es la que usa el reparto del manager: el número se fijó al crear la
+// competencia y es el que se le viene cobrando a quienes aceptaron antes.
+// Recalcularlo abriría la puerta a que dos jugadores del mismo partido terminen
+// con montos distintos si la fórmula cambia entremedio.
+func SplitMatchCostWithShare(totalAmount, perPlayer int64, payerMembershipIDs []string) MatchCostSplit {
 	teamShare := ceilDiv(totalAmount, 2)
 
-	if len(payerMembershipIDs) == 0 || totalAmount <= 0 || playersPerSide <= 0 {
+	if len(payerMembershipIDs) == 0 || totalAmount <= 0 || perPlayer <= 0 {
 		return MatchCostSplit{Lines: []Line{}, TeamShare: teamShare}
 	}
-
-	perPlayer := ceilDiv(totalAmount, int64(playersPerSide)*2)
 
 	lines := make([]Line, 0, len(payerMembershipIDs))
 	for _, id := range payerMembershipIDs {
@@ -143,6 +180,23 @@ type Repository interface {
 		recalcula lo que nadie tocó y no se pisa lo que ya se pagó.
 	*/
 	CreateForSource(ctx context.Context, in CreateInput) ([]*Charge, error)
+	/*
+		EnsureForMembership deja creado el cargo de una sola membresía.
+
+		Es idempotente y no pisa nada: si ya existe —pendiente, enviado o
+		pagado— devuelve el que está. Sirve para el jugador que acepta la
+		citación y puede pagar en el acto, sin esperar el reparto del manager.
+	*/
+	EnsureForMembership(ctx context.Context, in EnsureInput) (*Charge, error)
+	/*
+		RemovePendingForMembership borra el cargo pendiente de una membresía.
+
+		Es lo que corresponde cuando alguien que había aceptado avisa que ya no
+		va: cobrarle la cancha a quien no juega rompe la confianza en la app.
+		Un cargo ya enviado o pagado no se toca —esa plata existe— y ahí no
+		borra nada.
+	*/
+	RemovePendingForMembership(ctx context.Context, source Source, membershipID string) error
 	SubmitReceipt(ctx context.Context, id, receiptURL string, at time.Time) (*Charge, error)
 	Confirm(ctx context.Context, id, confirmedBy string, at time.Time) (*Charge, error)
 	// RejectReceipt devuelve el cargo a pendiente para que se vuelva a subir.

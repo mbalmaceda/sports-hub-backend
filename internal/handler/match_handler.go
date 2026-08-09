@@ -1,12 +1,16 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/charge"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
@@ -16,6 +20,8 @@ import (
 type MatchHandler struct {
 	matches       match.Repository
 	memberships   membership.Repository
+	competitions  competition.Repository
+	charges       charge.Repository
 	notifications *notification.Service
 	firebase      *firebase.Firebase
 	authz         teamAuthorizer
@@ -24,12 +30,16 @@ type MatchHandler struct {
 func NewMatchHandler(
 	matches match.Repository,
 	memberships membership.Repository,
+	competitions competition.Repository,
+	charges charge.Repository,
 	notifications *notification.Service,
 	fb *firebase.Firebase,
 ) *MatchHandler {
 	return &MatchHandler{
 		matches:       matches,
 		memberships:   memberships,
+		competitions:  competitions,
+		charges:       charges,
 		notifications: notifications,
 		firebase:      fb,
 		authz:         teamAuthorizer{memberships: memberships},
@@ -294,7 +304,59 @@ func (h *MatchHandler) RespondToCallup(c *gin.Context) {
 		Status:  string(callup.Status),
 	}})
 
+	// Aceptar es comprometerse con la cuota de la cancha, así que el cargo nace
+	// acá y no cuando el manager reparte. La cuota por jugador ya quedó fijada
+	// al crear la competencia, de modo que no hay nada que esperar: el jugador
+	// puede pagar en el acto o dejarlo para después, y el reparto del manager
+	// pasa a ser el recordatorio de los que lo dejaron para después.
+	h.syncMatchCharge(c.Request.Context(), m, req.TeamID, me.ID, *req.Attending)
+
 	c.JSON(http.StatusOK, callup)
+}
+
+// syncMatchCharge deja el cargo del jugador acorde a lo que acaba de responder:
+// existe si va, y desaparece —solo si nadie lo pagó— si dijo que no.
+//
+// No devuelve error a propósito: la respuesta a la citación ya está guardada y
+// es lo que el jugador vino a hacer. Fallar acá y devolverle un error lo dejaría
+// creyendo que no quedó anotado, que es peor que un cargo que el reparto del
+// manager va a corregir igual.
+func (h *MatchHandler) syncMatchCharge(
+	ctx context.Context, m *match.Match, teamID, membershipID string, attending bool,
+) {
+	source := charge.Source{Type: charge.SourceMatchCost, ID: m.CompetitionID}
+
+	if !attending {
+		if err := h.charges.RemovePendingForMembership(ctx, source, membershipID); err != nil {
+			slog.Error("could not remove the charge of a player who declined",
+				"error", err, "match_id", m.ID, "membership_id", membershipID)
+		}
+		return
+	}
+
+	comp, err := h.competitions.FindByID(ctx, m.CompetitionID)
+	if err != nil {
+		slog.Error("could not read the competition to charge the venue",
+			"error", err, "competition_id", m.CompetitionID)
+		return
+	}
+	// La cuota se guardó al crear la competencia: acá se lee, no se recalcula.
+	// Nula significa que nadie le puso precio al lugar, que es un caso normal y
+	// no un error.
+	if comp.PlayerShare == nil || *comp.PlayerShare <= 0 || comp.VenueCost == nil {
+		return
+	}
+
+	if _, err := h.charges.EnsureForMembership(ctx, charge.EnsureInput{
+		TeamID:       teamID,
+		MembershipID: membershipID,
+		Source:       source,
+		Amount:       *comp.PlayerShare,
+		Currency:     comp.VenueCost.Currency,
+	}); err != nil {
+		slog.Error("could not create the charge of a player who confirmed",
+			"error", err, "match_id", m.ID, "membership_id", membershipID)
+	}
 }
 
 // loadMatchForMember carga el partido y exige pertenecer a alguno de los dos

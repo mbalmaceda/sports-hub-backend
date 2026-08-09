@@ -39,6 +39,12 @@ func (m *MockCompetitionRepo) UpdateStatus(ctx context.Context, id string, statu
 	return m.Called(ctx, id, status).Error(0)
 }
 
+func (m *MockCompetitionRepo) UpdateSchedule(
+	ctx context.Context, id string, startAt time.Time, venue string,
+) error {
+	return m.Called(ctx, id, startAt, venue).Error(0)
+}
+
 func (m *MockCompetitionRepo) ListEntries(ctx context.Context, competitionID string) ([]*competition.Entry, error) {
 	args := m.Called(ctx, competitionID)
 	if args.Get(0) == nil {

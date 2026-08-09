@@ -50,11 +50,15 @@ func newChargeHandler() (*handler.ChargeHandler, chargeDeps) {
 
 func sevenASideCompetition() *competition.Competition {
 	perSide := 7
-	return &competition.Competition{
+	c := &competition.Competition{
 		ID: "comp-1", Type: competition.TypeFriendly, OrganizerTeamID: homeTeam,
 		PlayersPerSide: &perSide,
 		VenueCost:      &competition.VenueCost{Amount: 28000, Currency: "CLP"},
 	}
+	// Igual que en la base: la cuota queda resuelta al crearse, no en cada
+	// lectura. $28.000 entre 14 son $2.000.
+	c.PlayerShare = c.ResolvePlayerShare()
+	return c
 }
 
 func splitRequest(c *gin.Context) {

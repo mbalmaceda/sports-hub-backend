@@ -17,8 +17,13 @@ Registra un usuario nuevo y devuelve tokens. Los campos del perfil deportivo
 son opcionales: la cuenta se crea igual sin ellos.
 
 `birth_date` va en formato `YYYY-MM-DD`. El RUT (`tax_id`) se normaliza
-(sin puntos ni guiones) antes de guardarse; intentar registrar un RUT ya
-existente devuelve **409**.
+(sin puntos ni guiones, la K en mayúscula) antes de guardarse; intentar
+registrar un RUT ya existente devuelve **409**.
+
+`tax_id` es opcional, pero si viene se valida el dígito verificador con el
+módulo 11 chileno: uno inventado devuelve **400**. La app móvil además lo exige
+para crear la cuenta, porque es la llave con la que un manager encuentra a un
+jugador para invitarlo.
 
 **Body**
 ```json
@@ -26,7 +31,7 @@ existente devuelve **409**.
   "name": "Mirko Balmaceda",
   "email": "mirko@example.com",
   "password": "minimo6chars",
-  "tax_id": "12.345.678-9",
+  "tax_id": "12.345.678-5",
   "favorite_sport": "football",
   "height_cm": 175,
   "weight_kg": 70.5,
@@ -62,6 +67,7 @@ existente devuelve **409**.
 }
 ```
 
+**Response 400** `{ "error": "tax_id is not a valid RUT" }`  
 **Response 409** `{ "error": "email already registered" }` |
 `{ "error": "tax id already registered" }`
 
@@ -451,13 +457,15 @@ Retorna el perfil del usuario autenticado.
 Actualización parcial del perfil. Campos omitidos o vacíos no sobreescriben el valor existente.
 
 `birth_date` va en formato `YYYY-MM-DD`. El RUT (`tax_id`) se normaliza
-(sin puntos ni guiones) antes de guardarse; un RUT ya tomado devuelve **409**.
+(sin puntos ni guiones, la K en mayúscula) antes de guardarse; si viene se le
+valida el dígito verificador (**400** si no cuadra) y un RUT ya tomado devuelve
+**409**.
 
 **Body** _(todos opcionales)_
 ```json
 {
   "name": "Mirko B.",
-  "tax_id": "12.345.678-9",
+  "tax_id": "12.345.678-5",
   "phone": "+56912345678",
   "avatar_url": "https://cdn.example.com/avatar.jpg",
   "favorite_sport": "football",
@@ -472,6 +480,7 @@ Actualización parcial del perfil. Campos omitidos o vacíos no sobreescriben el
 ```
 
 **Response 200** — objeto User actualizado  
+**Response 400** `{ "error": "tax_id is not a valid RUT" }`  
 **Response 409** `{ "error": "tax id already registered" }`
 
 ---
