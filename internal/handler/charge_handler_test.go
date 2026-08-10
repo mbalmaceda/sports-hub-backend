@@ -299,7 +299,10 @@ func TestSubmitReceipt_RejectsSomeoneElsesCharge(t *testing.T) {
 }
 
 // Un tesorero no puede confirmarse su propio pago: eso elimina el control de
-// dos ojos que justifica que exista el estado 'submitted'.
+// dos ojos que justificaba que existiera el estado 'submitted'.
+//
+// Cubre el endpoint legado —hoy la app no confirma nada, el comprobante cierra
+// el cobro— y sigue acá porque un rollback del backend lo vuelve a activar.
 func TestConfirmCharge_RejectsSelfConfirmation(t *testing.T) {
 	h, d := newChargeHandler()
 

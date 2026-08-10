@@ -32,15 +32,18 @@ type Source struct {
 type Status string
 
 const (
-	StatusPending   Status = "pending"
+	StatusPending Status = "pending"
+	// StatusSubmitted es del flujo viejo, cuando el comprobante esperaba que un
+	// manager lo confirmara. Ya nadie lo produce: subir el comprobante deja el
+	// cargo en 'paid' directo (ver SubmitReceipt). Se conserva porque el
+	// esquema todavía lo acepta y porque un rollback del backend lo revive.
 	StatusSubmitted Status = "submitted"
 	StatusPaid      Status = "paid"
 	StatusWaived    Status = "waived"
 )
 
-// IsSettled indica si el cargo ya no admite que se rehaga el reparto: o está
-// cobrado, o hay un comprobante esperando revisión. Rehacer sobre eso borraría
-// plata que alguien ya transfirió.
+// IsSettled indica si el cargo ya no admite que se rehaga el reparto: es plata
+// que alguien ya declaró como transferida. Rehacer sobre eso la borraría.
 func (s Status) IsSettled() bool {
 	return s == StatusPaid || s == StatusSubmitted
 }
@@ -197,7 +200,22 @@ type Repository interface {
 		borra nada.
 	*/
 	RemovePendingForMembership(ctx context.Context, source Source, membershipID string) error
+	/*
+		SubmitReceipt marca el cargo como pagado con el comprobante del deudor.
+
+		Es un solo paso a propósito: el que transfiere declara y se le cree. El
+		control de dos ojos que justificaba el estado intermedio costaba más de
+		lo que cuidaba —cobros que quedaban semanas en 'submitted' porque nadie
+		revisó— en un equipo donde todos se conocen.
+
+		Deja `confirmed_by` vacío: nadie verificó nada, y así se distingue de lo
+		que sí confirmó un tesorero antes de este cambio.
+	*/
 	SubmitReceipt(ctx context.Context, id, receiptURL string, at time.Time) (*Charge, error)
+	// Confirm y RejectReceipt son del flujo viejo y hoy no los llama la app:
+	// solo operan sobre 'submitted', que ya nadie produce. Siguen acá porque un
+	// rollback del backend vuelve a generar ese estado y alguien tiene que
+	// poder resolverlo.
 	Confirm(ctx context.Context, id, confirmedBy string, at time.Time) (*Charge, error)
 	// RejectReceipt devuelve el cargo a pendiente para que se vuelva a subir.
 	RejectReceipt(ctx context.Context, id string) (*Charge, error)

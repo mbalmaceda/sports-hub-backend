@@ -303,7 +303,10 @@ func (h *ChargeHandler) Funds(c *gin.Context) {
 }
 
 // SubmitReceipt POST /charges/:chargeId/receipt
-// Lo sube el propio deudor: nadie paga por otro.
+//
+// Lo sube el propio deudor: nadie paga por otro. Y con eso el cargo queda
+// pagado, sin pasar por la revisión de nadie —la app confía en quien declara
+// haber transferido—, así que este es el único endpoint que cierra un cobro.
 func (h *ChargeHandler) SubmitReceipt(c *gin.Context) {
 	ch, me, ok := h.loadCharge(c)
 	if !ok {
@@ -335,7 +338,13 @@ func (h *ChargeHandler) SubmitReceipt(c *gin.Context) {
 }
 
 // Confirm POST /charges/:chargeId/confirm
+//
 // Lo confirma quien maneja la plata, nunca el propio deudor.
+//
+// LEGADO: la app ya no lo llama. Desde que el comprobante da el cargo por
+// pagado no queda nada en 'submitted', que es lo único sobre lo que este
+// endpoint opera, así que hoy responde 409 siempre. No se borró porque un
+// rollback del backend vuelve a producir ese estado y hay que poder cerrarlo.
 func (h *ChargeHandler) Confirm(c *gin.Context) {
 	ch, me, ok := h.loadCharge(c)
 	if !ok {

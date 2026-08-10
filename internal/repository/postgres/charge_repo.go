@@ -143,8 +143,6 @@ func (r *ChargeRepository) CreateForSource(ctx context.Context, in charge.Create
 	return charges, nil
 }
 
-// SubmitReceipt exige que el cargo esté pendiente. El WHERE lo hace atómico:
-// dos envíos simultáneos y el segundo no afecta filas.
 // EnsureForMembership crea el cargo de una membresía si todavía no existe.
 //
 // El ON CONFLICT DO NOTHING más el SELECT de vuelta es lo que lo hace
@@ -189,9 +187,17 @@ func (r *ChargeRepository) RemovePendingForMembership(
 	return nil
 }
 
+// SubmitReceipt da el cargo por pagado en el mismo acto: el que transfiere es
+// el que declara, y se le cree. El WHERE exige que esté pendiente y hace la
+// operación atómica: dos envíos simultáneos y el segundo no afecta filas.
+//
+// `confirmed_at` se sella acá porque el cargo queda cerrado, pero `confirmed_by`
+// se deja en NULL a propósito: nadie verificó nada. Un `paid` con `confirmed_by`
+// vacío es exactamente eso —un pago declarado por el deudor— y así se distingue
+// de los que sí revisó un tesorero antes de este cambio.
 func (r *ChargeRepository) SubmitReceipt(ctx context.Context, id, receiptURL string, at time.Time) (*charge.Charge, error) {
 	q := `UPDATE charges
-		SET receipt_url = $1, status = 'submitted', submitted_at = $2
+		SET receipt_url = $1, status = 'paid', submitted_at = $2, confirmed_at = $2
 		WHERE id = $3 AND status = 'pending'
 		RETURNING` + chargeColumns
 	ch, err := scanCharge(r.pool.QueryRow(ctx, q, receiptURL, at, id))
