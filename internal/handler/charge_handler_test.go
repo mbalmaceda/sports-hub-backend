@@ -483,3 +483,72 @@ func TestFunds_RequiresMembership(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	d.funds.AssertNotCalled(t, "ListByTeam", mock.Anything, mock.Anything)
 }
+
+// Los cargos del mes: la otra mitad del ingreso, junto a las cuotas.
+func TestListChargesByPeriod_AnyMemberCanRead(t *testing.T) {
+	h, d := newChargeHandler()
+
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-player", homeTeam).
+		Return(&membership.Membership{
+			ID: "m-1", UserID: "user-player", TeamID: homeTeam,
+			Role: membership.RolePlayer, Status: membership.StatusActive,
+		}, nil)
+	d.charges.On("ListByTeamAndPeriod", mock.Anything, homeTeam, 2026, 8).
+		Return([]*charge.Charge{
+			{ID: "ch-1", TeamID: homeTeam, Amount: 2000, Status: charge.StatusPaid},
+		}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-player")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodGet,
+		"/teams/"+homeTeam+"/charges?year=2026&month=8", nil)
+
+	h.ListByTeamAndPeriod(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	d.charges.AssertExpectations(t)
+}
+
+// Sin cargos devuelve lista vacía, no null.
+func TestListChargesByPeriod_EmptyIsArray(t *testing.T) {
+	h, d := newChargeHandler()
+
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
+		Return(managerOf(homeTeam, "user-mgr"), nil)
+	d.charges.On("ListByTeamAndPeriod", mock.Anything, homeTeam, 2026, 8).Return(nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-mgr")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodGet,
+		"/teams/"+homeTeam+"/charges?year=2026&month=8", nil)
+
+	h.ListByTeamAndPeriod(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", w.Body.String())
+}
+
+// Un extraño no ve la recaudación del equipo.
+func TestListChargesByPeriod_NonMemberIsRejected(t *testing.T) {
+	h, d := newChargeHandler()
+
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-ajeno", homeTeam).
+		Return(nil, membership.ErrNotFound)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-ajeno")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodGet,
+		"/teams/"+homeTeam+"/charges?year=2026&month=8", nil)
+
+	h.ListByTeamAndPeriod(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	d.charges.AssertNotCalled(t, "ListByTeamAndPeriod",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}

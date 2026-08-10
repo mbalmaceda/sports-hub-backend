@@ -77,6 +77,30 @@ func (r *ChargeRepository) ListBySource(ctx context.Context, source charge.Sourc
 	return collectCharges(rows)
 }
 
+// ListByTeamAndPeriod filtra por el mes en que el cargo movió plata: la fecha
+// de cobro si ya se pagó, la de emisión si no. Rango medio abierto para que el
+// índice de `charges (team_id, status)` siga sirviendo de filtro previo.
+func (r *ChargeRepository) ListByTeamAndPeriod(
+	ctx context.Context, teamID string, year, month int,
+) ([]*charge.Charge, error) {
+	from := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 1, 0)
+
+	q := `SELECT` + chargeColumns + `
+		FROM charges
+		WHERE team_id = $1
+		  AND COALESCE(confirmed_at, created_at) >= $2
+		  AND COALESCE(confirmed_at, created_at) < $3
+		ORDER BY COALESCE(confirmed_at, created_at) DESC`
+
+	rows, err := r.pool.Query(ctx, q, teamID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("charge.ListByTeamAndPeriod: %w", err)
+	}
+	defer rows.Close()
+	return collectCharges(rows)
+}
+
 func (r *ChargeRepository) ListByMembership(ctx context.Context, membershipID string) ([]*charge.Charge, error) {
 	q := `SELECT` + chargeColumns + `
 		FROM charges WHERE membership_id = $1

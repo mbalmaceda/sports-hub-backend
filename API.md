@@ -424,6 +424,113 @@ Revierte un pago. Si tenía `obligation_id`, la cuota vuelve a `pending`.
 
 ---
 
+## Charges 🔒
+
+Cobros: plata que un miembro le debe al equipo. Hoy los produce el reparto del
+costo de cancha de un partido (`source_type: "match_cost"`, con la competencia
+como `source_id`).
+
+Ya existían y no están documentados en detalle acá: `POST /teams/:id/charges`
+(reparte), `GET /competitions/:competitionId/charges`, `GET
+/memberships/:membershipId/charges`, `POST /charges/:chargeId/receipt`,
+`/confirm` y `/reject`, y `GET /teams/:id/funds`.
+
+### GET `/teams/:id/charges?year=2026&month=8`
+Los cobros del equipo en un mes. Lo lee cualquier miembro. Sin `year`/`month`
+usa el mes en curso.
+
+Un cobro pertenece al mes en que **movió plata**: `confirmed_at` si ya se pagó,
+`created_at` si todavía no. Un cobro emitido en julio y pagado en agosto es
+recaudación de agosto —es cuando el equipo tuvo el dinero— y contarlo en julio
+le pondría ingresos a un mes que ya cerró.
+
+Es la otra mitad del ingreso mensual, junto a `/teams/:id/fees`. Sin esto el
+resumen del mes restaba los gastos de un partido sin sumar nunca lo que los
+jugadores pagaron por esa misma cancha.
+
+**Response 200** — array de Charge  
+**Response 400** `{ "error": "invalid month" }`  
+**Response 403** — no sos miembro del equipo
+
+---
+
+## Expenses 🔒
+
+Plata que sale. Los gastos pueden colgar de un partido —el árbitro, las pecheras
+de ese amistoso— o ser del equipo a secas (pelotas, botiquín). Los que tienen
+`source` entran en el balance de ese partido; el resto solo en el total del mes.
+
+### GET `/teams/:id/expenses?year=2026&month=8`
+Gastos del equipo en un mes calendario, por fecha de gasto. Sin `year`/`month`
+usa el mes en curso. Lo lee cualquier miembro del equipo.
+
+**Response 200** — array de Expense  
+**Response 400** `{ "error": "invalid month" }`  
+**Response 403** — no sos miembro del equipo
+
+---
+
+### POST `/teams/:id/expenses`
+Anota un gasto. Requiere rol `manager` o `treasurer`.
+
+**Body**
+```json
+{
+  "amount": 20000,
+  "currency": "CLP",
+  "category": "referee",
+  "description": "Árbitro del amistoso",
+  "source_type": "match_cost",
+  "source_id": "uuid-de-la-competencia",
+  "expense_date": "2026-08-09"
+}
+```
+
+`source_type` y `source_id` son opcionales, pero van **los dos o ninguno**: media
+referencia no apunta a nada. La competencia tiene que ser del mismo equipo.
+`expense_date` vacío es hoy.
+
+**Response 201** — objeto Expense  
+**Response 400** — monto ≤ 0, falta categoría o moneda, origen a medias, fecha mal formada  
+**Response 403** — rol insuficiente, o la competencia es de otro equipo  
+**Response 404** — la competencia no existe
+
+---
+
+### GET `/competitions/:competitionId/expenses`
+Los gastos que cuelgan de ese partido, para cruzarlos con `/competitions/:id/charges`
+y armar el balance. Lo lee cualquier miembro del equipo organizador.
+
+**Response 200** — array de Expense  
+**Response 404** — la competencia no existe
+
+---
+
+### DELETE `/expenses/:expenseId`
+Borra un gasto. No hay edición: un gasto mal cargado se borra y se vuelve a
+anotar. Requiere rol `manager` o `treasurer` en el equipo dueño.
+
+**Response 204** — sin cuerpo  
+**Response 404** — el gasto no existe
+
+---
+
+### Expense
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | string (UUID) | |
+| `team_id` | string (UUID) | |
+| `recorded_by` | string (UUID) | quién lo anotó (del JWT); vacío si el usuario se borró |
+| `amount` | number | en unidades menores de la moneda |
+| `currency` | string | ej. `"CLP"` |
+| `category` | string | libre; la app usa `referee`, `equipment`, `venue`, `other` |
+| `description` | string | opcional |
+| `source` | objeto \| ausente | `{ "type": "match_cost", "id": "<competitionId>" }` |
+| `expense_date` | string (ISO 8601) | cuándo se gastó, no cuándo se anotó |
+| `created_at` | string (ISO 8601) | |
+
+---
+
 ## User Profile 🔒
 
 ### GET `/users/me`

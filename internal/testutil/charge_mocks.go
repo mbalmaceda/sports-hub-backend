@@ -31,6 +31,16 @@ func (m *MockChargeRepo) ListBySource(ctx context.Context, source charge.Source)
 	return args.Get(0).([]*charge.Charge), args.Error(1)
 }
 
+func (m *MockChargeRepo) ListByTeamAndPeriod(
+	ctx context.Context, teamID string, year, month int,
+) ([]*charge.Charge, error) {
+	args := m.Called(ctx, teamID, year, month)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*charge.Charge), args.Error(1)
+}
+
 func (m *MockChargeRepo) ListByMembership(ctx context.Context, membershipID string) ([]*charge.Charge, error) {
 	args := m.Called(ctx, membershipID)
 	if args.Get(0) == nil {

@@ -50,6 +50,7 @@ func main() {
 	matchRepo := postgres.NewMatchRepository(pool)
 	chargeRepo := postgres.NewChargeRepository(pool)
 	fundsRepo := postgres.NewFundsRepository(pool)
+	expenseRepo := postgres.NewExpenseRepository(pool)
 	onboardingRepo := postgres.NewOnboardingRepository(pool)
 
 	// Notifier. Los tokens de push viven en la tabla de usuarios, así que el
@@ -77,6 +78,7 @@ func main() {
 	friendlyHandler := handler.NewFriendlyHandler(friendlyRepo, competitionRepo, matchRepo, rosterRepo)
 	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, competitionRepo, chargeRepo, notifications, firebaseAuth)
 	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo, notifications)
+	expenseHandler := handler.NewExpenseHandler(expenseRepo, competitionRepo, rosterRepo)
 	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo, notifications, firebaseAuth)
 
 	// Router
@@ -174,6 +176,7 @@ func main() {
 
 		// ── Cobros ──
 		protected.POST("/teams/:id/charges", chargeHandler.Split)
+		protected.GET("/teams/:id/charges", chargeHandler.ListByTeamAndPeriod)
 		protected.GET("/teams/:id/funds", chargeHandler.Funds)
 		protected.GET("/teams/:id/bank-account", teamHandler.GetBankAccount)
 		protected.PUT("/teams/:id/bank-account", teamHandler.SaveBankAccount)
@@ -182,6 +185,12 @@ func main() {
 		protected.POST("/charges/:chargeId/receipt", chargeHandler.SubmitReceipt)
 		protected.POST("/charges/:chargeId/confirm", chargeHandler.Confirm)
 		protected.POST("/charges/:chargeId/reject", chargeHandler.RejectReceipt)
+
+		// ── Gastos ──
+		protected.GET("/teams/:id/expenses", expenseHandler.ListByTeamAndPeriod)
+		protected.POST("/teams/:id/expenses", expenseHandler.Create)
+		protected.GET("/competitions/:competitionId/expenses", expenseHandler.ListByCompetition)
+		protected.DELETE("/expenses/:expenseId", expenseHandler.Delete)
 
 		// ── Incorporación ──
 		protected.GET("/people/lookup", onboardingHandler.FindPerson)

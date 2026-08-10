@@ -176,6 +176,15 @@ type Repository interface {
 	ListBySource(ctx context.Context, source Source) ([]*Charge, error)
 	ListByMembership(ctx context.Context, membershipID string) ([]*Charge, error)
 	/*
+		ListByTeamAndPeriod devuelve los cargos del equipo que caen en un mes.
+
+		El mes de un cargo es aquel en que movió plata: `confirmed_at` si está
+		pagado, `created_at` si todavía no. Un cargo emitido en julio y pagado en
+		agosto es recaudación de agosto —es cuando el equipo tuvo el dinero— y
+		contarlo en julio le pondría ingresos a un mes que ya cerró.
+	*/
+	ListByTeamAndPeriod(ctx context.Context, teamID string, year, month int) ([]*Charge, error)
+	/*
 		CreateForSource reemplaza los cargos pendientes de ese origen y conserva
 		los que ya están cobrados o con comprobante enviado.
 

@@ -65,6 +65,34 @@ func (h *ChargeHandler) ListByCompetition(c *gin.Context) {
 	c.JSON(http.StatusOK, charges)
 }
 
+// ListByTeamAndPeriod GET /teams/:id/charges?year=2026&month=8
+//
+// Lo que el equipo cobró y tiene por cobrar en un mes. Es la otra mitad del
+// ingreso: sin esto el resumen mensual solo veía las cuotas, y desde que los
+// gastos pueden colgar de un partido restaba la cancha sin sumar nunca lo que
+// los jugadores pagaron por ella.
+func (h *ChargeHandler) ListByTeamAndPeriod(c *gin.Context) {
+	teamID := c.Param("id")
+	if _, err := h.authz.requireMember(c, teamID); abortAuthz(c, err) {
+		return
+	}
+
+	year, month, ok := periodFromQuery(c)
+	if !ok {
+		return
+	}
+
+	charges, err := h.charges.ListByTeamAndPeriod(c.Request.Context(), teamID, year, month)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list charges"})
+		return
+	}
+	if charges == nil {
+		charges = []*charge.Charge{}
+	}
+	c.JSON(http.StatusOK, charges)
+}
+
 // ListByMembership GET /memberships/:membershipId/charges
 func (h *ChargeHandler) ListByMembership(c *gin.Context) {
 	membershipID := c.Param("membershipId")
