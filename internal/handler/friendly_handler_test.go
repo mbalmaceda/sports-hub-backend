@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/friendly"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
@@ -219,6 +221,163 @@ func TestCreateFriendly_RejectsSelfChallenge(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	h.Create(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	cr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+}
+
+// Listar los amistosos del equipo vence lo que se pasó de plazo y cancela su
+// competencia. Es lo único que lo hace: sin un trabajo periódico, si la lectura
+// no barre, el desafío se queda en 'pending' para siempre.
+func TestListFriendlies_ExpiresStaleAndCancelsCompetition(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+	fr.On("ExpireStale", mock.Anything, mock.Anything).Return([]string{"comp-1"}, nil)
+	cr.On("UpdateStatus", mock.Anything, "comp-1", competition.StatusCancelled).Return(nil)
+	fr.On("ListByTeam", mock.Anything, homeTeam).Return([]*friendly.Challenge{}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/teams/"+homeTeam+"/friendlies", nil)
+
+	h.ListByTeam(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	cr.AssertExpectations(t)
+}
+
+// Si la barrida falla, la lectura sigue: el peor caso es devolver un estado
+// viejo, no una pantalla de error.
+func TestListFriendlies_SweepFailureDoesNotBreakTheRead(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+	fr.On("ExpireStale", mock.Anything, mock.Anything).Return(nil, errors.New("boom"))
+	fr.On("ListByTeam", mock.Anything, homeTeam).Return([]*friendly.Challenge{openChallenge()}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/teams/"+homeTeam+"/friendlies", nil)
+
+	h.ListByTeam(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "ch-1")
+	cr.AssertNotCalled(t, "UpdateStatus", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// El partido interno nace completo: competencia activa, el equipo adentro y el
+// partido confirmado con el mismo equipo de los dos lados. Sin desafío de por
+// medio, porque no hay a quién esperar.
+func TestCreateInternalMatch_CreatesCompetitionAndConfirmedMatch(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+	cr.On("Create", mock.Anything, mock.Anything).Return(nil)
+	cr.On("UpsertEntry", mock.Anything, mock.Anything).Return(nil)
+	mr.On("Create", mock.Anything, mock.Anything).Return(nil)
+
+	body := `{"name":"Pichanga del jueves","sport_id":"football7","players_per_side":7,` +
+		`"venue":"Cancha 3","start_at":"` + time.Now().Add(48*time.Hour).Format(time.RFC3339) + `"}`
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/internal-matches", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.CreateInternal(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+
+	createdComp := cr.Calls[0].Arguments.Get(1).(*competition.Competition)
+	assert.True(t, createdComp.IsInternal)
+	assert.Equal(t, competition.TypeFriendly, createdComp.Type)
+	// Activa desde el arranque: no hay rival que tenga que aceptar.
+	assert.Equal(t, competition.StatusActive, createdComp.Status)
+
+	createdMatch := mr.Calls[0].Arguments.Get(1).(*match.Match)
+	assert.Equal(t, homeTeam, createdMatch.HomeTeamID)
+	assert.Equal(t, homeTeam, createdMatch.AwayTeamID)
+	assert.Equal(t, match.StatusConfirmed, createdMatch.Status)
+
+	// Nadie a quien desafiar: no se crea desafío ni propuesta.
+	fr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// Un jugador no puede armar un partido interno: convocar y repartir el costo de
+// la cancha es trabajo del manager, igual que en un amistoso.
+func TestCreateInternalMatch_PlayerCannotCreate(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	player := managerOf(homeTeam, "user-player")
+	player.Role = membership.RolePlayer
+	memr.On("FindByUserAndTeam", mock.Anything, "user-player", homeTeam).Return(player, nil)
+
+	body := `{"name":"Pichanga","sport_id":"football7",` +
+		`"start_at":"` + time.Now().Add(48*time.Hour).Format(time.RFC3339) + `"}`
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-player")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/internal-matches", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.CreateInternal(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	cr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	mr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+}
+
+// Una fecha ya pasada se rechaza antes de escribir nada.
+func TestCreateInternalMatch_RejectsPastDate(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+
+	body := `{"name":"Pichanga","sport_id":"football7",` +
+		`"start_at":"` + time.Now().Add(-2*time.Hour).Format(time.RFC3339) + `"}`
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/internal-matches", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.CreateInternal(c)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	cr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)

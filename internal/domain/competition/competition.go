@@ -80,8 +80,18 @@ type Competition struct {
 
 		Nulo cuando no hay costo de lugar o no se configuró la nómina.
 	*/
-	PlayerShare *int64    `json:"player_share,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	PlayerShare *int64 `json:"player_share,omitempty"`
+	/*
+		IsInternal marca el partido interno: el equipo juega contra sí mismo y
+		pone los jugadores de los dos lados.
+
+		No hay rival, ni desafío, ni nada que negociar —el partido nace
+		confirmado—, y la nómina a convocar es el doble: los que entran por lado
+		por los dos lados. Lo demás es igual a cualquier amistoso, por eso es una
+		bandera y no un tipo nuevo de competencia.
+	*/
+	IsInternal bool      `json:"is_internal"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // ResolvePlayerShare es la cuota por jugador: el lugar repartido entre los que
@@ -142,6 +152,12 @@ type Repository interface {
 
 	FindInvitation(ctx context.Context, id string) (*Invitation, error)
 	ListInvitationsForTeam(ctx context.Context, teamID string) ([]*Invitation, error)
+	// ExpireStaleInvitations marca vencidas las invitaciones sin responder cuyo
+	// plazo pasó. A diferencia del amistoso, acá no se cancela nada: el torneo
+	// sigue para los demás, el que se quedó afuera es el equipo que no contestó.
+	// Además libera el índice único de invitaciones 'sent', que es lo que
+	// permite volver a invitar al mismo equipo.
+	ExpireStaleInvitations(ctx context.Context, now time.Time) error
 	CreateInvitation(ctx context.Context, inv *Invitation) error
 	// RespondToInvitation resuelve la invitación y sincroniza la entrada del
 	// equipo en la misma transacción: aceptar sin quedar inscrito, o quedar

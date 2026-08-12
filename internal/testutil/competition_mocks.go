@@ -73,6 +73,10 @@ func (m *MockCompetitionRepo) ListInvitationsForTeam(ctx context.Context, teamID
 	return args.Get(0).([]*competition.Invitation), args.Error(1)
 }
 
+func (m *MockCompetitionRepo) ExpireStaleInvitations(ctx context.Context, now time.Time) error {
+	return m.Called(ctx, now).Error(0)
+}
+
 func (m *MockCompetitionRepo) CreateInvitation(ctx context.Context, inv *competition.Invitation) error {
 	return m.Called(ctx, inv).Error(0)
 }
@@ -113,6 +117,14 @@ func (m *MockFriendlyRepo) Create(ctx context.Context, ch *friendly.Challenge, f
 
 func (m *MockFriendlyRepo) UpdateStatus(ctx context.Context, id string, status friendly.Status) error {
 	return m.Called(ctx, id, status).Error(0)
+}
+
+func (m *MockFriendlyRepo) ExpireStale(ctx context.Context, now time.Time) ([]string, error) {
+	args := m.Called(ctx, now)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]string), args.Error(1)
 }
 
 func (m *MockFriendlyRepo) ListProposals(ctx context.Context, challengeID string) ([]*friendly.Proposal, error) {

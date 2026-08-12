@@ -78,6 +78,20 @@ type Repository interface {
 	// propuesta no tiene fecha ni lugar, o sea que no es nada.
 	Create(ctx context.Context, ch *Challenge, first *Proposal) error
 	UpdateStatus(ctx context.Context, id string, status Status) error
+	/*
+		ExpireStale cierra los desafíos abiertos cuyo plazo ya pasó y devuelve
+		las competencias que quedaron sin partido, para que quien llame las
+		cancele.
+
+		Es lo mismo que hace rechazar, pero por reloj en vez de por decisión de
+		alguien: si nadie contestó a tiempo, el partido no se va a jugar. Sin
+		esto el desafío se queda en 'pending' para siempre y el cliente muestra
+		como pendiente algo que responder ya devuelve 409.
+
+		Barre la tabla entera, no solo lo de un equipo: el plazo no depende de
+		quién esté mirando.
+	*/
+	ExpireStale(ctx context.Context, now time.Time) ([]string, error)
 
 	ListProposals(ctx context.Context, challengeID string) ([]*Proposal, error)
 	LatestProposal(ctx context.Context, challengeID string) (*Proposal, error)

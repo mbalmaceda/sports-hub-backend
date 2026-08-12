@@ -163,6 +163,9 @@ func main() {
 		protected.POST("/friendlies/:challengeId/counter", friendlyHandler.Counter)
 		protected.POST("/friendlies/:challengeId/accept", friendlyHandler.Accept)
 		protected.POST("/friendlies/:challengeId/decline", friendlyHandler.Decline)
+		// Amistoso sin rival: el equipo juega contra sí mismo. Cuelga del mismo
+		// handler porque es un amistoso, solo que no hay a quién esperar.
+		protected.POST("/teams/:id/internal-matches", friendlyHandler.CreateInternal)
 
 		// ── Partidos y convocatorias ──
 		protected.GET("/teams/:id/matches", matchHandler.ListByTeam)

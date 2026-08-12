@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -116,6 +117,32 @@ func (r *FriendlyRepository) UpdateStatus(ctx context.Context, id string, status
 		return fmt.Errorf("friendly.UpdateStatus: %w", err)
 	}
 	return nil
+}
+
+// ExpireStale vence de una sola pasada todo lo que se pasó de plazo. Un UPDATE
+// sin filas que tocar no escribe nada, así que en el caso normal —que es que no
+// haya nada vencido— sale gratis.
+func (r *FriendlyRepository) ExpireStale(ctx context.Context, now time.Time) ([]string, error) {
+	const q = `
+		UPDATE friendly_challenges
+		SET status = 'expired'
+		WHERE status IN ('pending', 'countered') AND expires_at < $1
+		RETURNING competition_id`
+	rows, err := r.pool.Query(ctx, q, now)
+	if err != nil {
+		return nil, fmt.Errorf("friendly.ExpireStale: %w", err)
+	}
+	defer rows.Close()
+
+	var competitionIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("friendly.ExpireStale: scan: %w", err)
+		}
+		competitionIDs = append(competitionIDs, id)
+	}
+	return competitionIDs, rows.Err()
 }
 
 const proposalColumns = `

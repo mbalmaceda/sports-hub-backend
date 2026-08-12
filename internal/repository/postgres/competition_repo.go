@@ -22,7 +22,8 @@ func NewCompetitionRepository(pool *pgxpool.Pool) *CompetitionRepository {
 
 const competitionColumns = `
 	id, sport_id, type, name, organizer_team_id, status, start_at, end_at,
-	venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share, created_at`
+	venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share,
+	is_internal, created_at`
 
 func scanCompetition(row pgx.Row) (*competition.Competition, error) {
 	c := &competition.Competition{}
@@ -32,7 +33,7 @@ func scanCompetition(row pgx.Row) (*competition.Competition, error) {
 	err := row.Scan(
 		&c.ID, &c.SportID, &c.Type, &c.Name, &c.OrganizerTeamID, &c.Status,
 		&c.StartAt, &c.EndAt, &venue, &c.PlayersPerSide, &amount, &currency,
-		&c.PlayerShare, &c.CreatedAt,
+		&c.PlayerShare, &c.IsInternal, &c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -97,8 +98,9 @@ func (r *CompetitionRepository) Create(ctx context.Context, c *competition.Compe
 	const q = `
 		INSERT INTO competitions
 			(sport_id, type, name, organizer_team_id, status, start_at, end_at,
-			 venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			 venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share,
+			 is_internal)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, created_at`
 
 	var amount *int64
@@ -116,6 +118,7 @@ func (r *CompetitionRepository) Create(ctx context.Context, c *competition.Compe
 	err := r.pool.QueryRow(ctx, q,
 		c.SportID, c.Type, c.Name, c.OrganizerTeamID, c.Status, c.StartAt, c.EndAt,
 		nullIfEmpty(c.Venue), c.PlayersPerSide, amount, currency, c.PlayerShare,
+		c.IsInternal,
 	).Scan(&c.ID, &c.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("competition.Create: %w", err)
@@ -229,6 +232,20 @@ func (r *CompetitionRepository) ListInvitationsForTeam(ctx context.Context, team
 		result = append(result, inv)
 	}
 	return result, rows.Err()
+}
+
+// ExpireStaleInvitations vence de una sola pasada todas las invitaciones sin
+// responder cuyo plazo pasó. La entrada del equipo se deja como está: quedó en
+// 'invited' y esa es la verdad, nunca dijo que sí ni que no.
+func (r *CompetitionRepository) ExpireStaleInvitations(ctx context.Context, now time.Time) error {
+	const q = `
+		UPDATE competition_invitations
+		SET status = 'expired'
+		WHERE status = 'sent' AND expires_at < $1`
+	if _, err := r.pool.Exec(ctx, q, now); err != nil {
+		return fmt.Errorf("competition.ExpireStaleInvitations: %w", err)
+	}
+	return nil
 }
 
 // CreateInvitation inserta la invitación y deja la entrada del equipo en

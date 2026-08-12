@@ -424,6 +424,95 @@ Revierte un pago. Si tenía `obligation_id`, la cuota vuelve a `pending`.
 
 ---
 
+## Competencias 🔒
+
+Una competencia es el paraguas del partido: amistoso, torneo o liga. De ella
+cuelgan las entradas de los equipos, las invitaciones, los partidos, los cobros y
+los gastos.
+
+Ya existían y no están documentados en detalle acá: `GET|POST
+/teams/:id/competitions`, `GET /competitions/:competitionId`, `/entries` e
+`/invitations`, `POST /competition-invitations/:invitationId/respond`, y toda la
+familia de amistosos (`/teams/:id/friendlies`, `/friendlies/:challengeId` con
+`/proposals`, `/counter`, `/accept` y `/decline`).
+
+Toda competencia trae `is_internal`. Es `false` salvo en los partidos internos.
+
+### POST `/teams/:id/internal-matches`
+Partido interno: el equipo pone la gente de los dos lados. Requiere rol `manager`.
+
+Es un amistoso sin rival, así que no hay desafío que negociar ni nadie que tenga
+que aceptar. Crea la competencia, la entrada del equipo y el partido en una sola
+llamada, los tres ya confirmados: la competencia nace `active` —un amistoso normal
+nace `draft` porque le falta el sí del rival— y el partido queda con el mismo
+equipo de los dos lados, `home_team_id == away_team_id`.
+
+`players_per_side` es **por lado**, igual que en el resto de la API: un fútbol 7
+interno se manda con `7`. Quien convoca duplica —son 14 personas— y la cuota sale
+de `costo ÷ (players_per_side × 2)`, que es la cuenta de siempre. Lo que cambia es
+que esas 14 cuotas salen del propio plantel, así que el equipo se hace cargo del
+lugar entero y no de la mitad.
+
+**Body**
+```json
+{
+  "name": "Partido interno",
+  "sport_id": "football7",
+  "start_at": "2026-08-20T21:00:00Z",
+  "venue": "Cancha 3",
+  "players_per_side": 7,
+  "venue_cost": { "amount": 28000, "currency": "CLP" }
+}
+```
+
+`name`, `sport_id` y `start_at` son obligatorios; el resto es opcional. Los montos
+van en unidades menores de la moneda: CLP no tiene decimales, así que `28000` es
+$28.000.
+
+**Response 201**
+```json
+{
+  "competition": {
+    "id": "uuid",
+    "sport_id": "football7",
+    "type": "friendly",
+    "name": "Partido interno",
+    "organizer_team_id": "uuid",
+    "status": "active",
+    "start_at": "2026-08-20T21:00:00Z",
+    "venue": "Cancha 3",
+    "players_per_side": 7,
+    "venue_cost": { "amount": 28000, "currency": "CLP" },
+    "player_share": 2000,
+    "is_internal": true,
+    "created_at": "2026-08-12T18:30:00Z"
+  },
+  "match": {
+    "id": "uuid",
+    "competition_id": "uuid",
+    "home_team_id": "uuid",
+    "away_team_id": "uuid",
+    "scheduled_at": "2026-08-20T21:00:00Z",
+    "venue": "Cancha 3",
+    "status": "confirmed",
+    "created_at": "2026-08-12T18:30:00Z"
+  }
+}
+```
+
+`player_share` lo calcula el backend al crear y desde ahí se lee: es el número que
+el asistente le prometió al manager, y derivarlo en cada lectura dejaría que un
+cambio de fórmula alterara en silencio lo que ya se le cobró a la gente.
+
+**Response 400** `{ "error": "match date must be in the future" }`  
+**Response 403** — no sos manager del equipo
+
+Desde acá se sigue con lo que ya existe: convocar (`POST /matches/:matchId/callups`)
+y repartir el costo (`POST /teams/:id/charges` con
+`source: { "type": "match_cost", "id": "<competitionId>" }`).
+
+---
+
 ## Charges 🔒
 
 Cobros: plata que un miembro le debe al equipo. Hoy los produce el reparto del

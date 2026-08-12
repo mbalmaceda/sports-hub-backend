@@ -193,6 +193,12 @@ func (h *CompetitionHandler) ListInvitations(c *gin.Context) {
 		return
 	}
 
+	// Vencer al leer, igual que con los amistosos: nadie más lo hace, y una
+	// invitación con el plazo cumplido no puede seguir figurando como abierta
+	// —responderla ya devuelve 409—. Si la barrida falla se sigue igual: lo
+	// peor es devolver el estado viejo.
+	_ = h.competitions.ExpireStaleInvitations(c.Request.Context(), time.Now())
+
 	invitations, err := h.competitions.ListInvitationsForTeam(c.Request.Context(), teamID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list invitations"})

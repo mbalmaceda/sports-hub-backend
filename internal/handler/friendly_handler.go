@@ -39,12 +39,42 @@ func NewFriendlyHandler(
 	}
 }
 
+/*
+expireStale cierra lo que se pasó de plazo: el desafío queda 'expired' y su
+competencia, cancelada. Es exactamente lo que hace Decline, pero decidido por el
+reloj en vez de por una persona.
+
+Corre al leer porque no hay quién más lo corra. Lo que corresponde es un trabajo
+periódico; mientras no exista, esto alcanza: quien mira la lista es justamente
+quien necesita el estado al día, y una lectura que no barre deja el desafío en
+'pending' para siempre. La contracara es que nada expira hasta que alguien abra
+la app —si el equipo no entra, el estado guardado sigue viejo—.
+
+Los errores se tragan a propósito. La barrida es mantenimiento, no la respuesta:
+si falla, el cliente ve un estado viejo, que es exactamente lo que veía antes de
+que esto existiera. Voltear la lectura por eso sería cambiar un dato desactualizado
+por una pantalla de error.
+*/
+func (h *FriendlyHandler) expireStale(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	competitionIDs, err := h.friendlies.ExpireStale(ctx, time.Now())
+	if err != nil {
+		return
+	}
+	for _, id := range competitionIDs {
+		_ = h.competitions.UpdateStatus(ctx, id, competition.StatusCancelled)
+	}
+}
+
 // ListByTeam GET /teams/:id/friendlies
 func (h *FriendlyHandler) ListByTeam(c *gin.Context) {
 	teamID := c.Param("id")
 	if _, err := h.authz.requireMember(c, teamID); abortAuthz(c, err) {
 		return
 	}
+
+	h.expireStale(c)
 
 	items, err := h.friendlies.ListByTeam(c.Request.Context(), teamID)
 	if err != nil {
@@ -59,6 +89,8 @@ func (h *FriendlyHandler) ListByTeam(c *gin.Context) {
 
 // GetByID GET /friendlies/:challengeId
 func (h *FriendlyHandler) GetByID(c *gin.Context) {
+	h.expireStale(c)
+
 	ch, err := h.friendlies.FindByID(c.Request.Context(), c.Param("challengeId"))
 	if errors.Is(err, friendly.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "friendly not found"})
@@ -155,6 +187,100 @@ func (h *FriendlyHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"competition": comp, "challenge": ch, "proposal": first})
+}
+
+/*
+CreateInternal POST /teams/:id/internal-matches
+
+Partido interno: el equipo pone la gente de los dos lados.
+
+No hay rival a quien desafiar, así que no hay desafío, ni propuesta, ni espera:
+la competencia y el partido nacen juntos y confirmados. Toda la máquina de
+negociar existe para ponerse de acuerdo con otro equipo, y acá el único que
+tiene que estar de acuerdo es el que organiza.
+
+Es el caso más común en equipos grandes —catorce personas y una cancha— y hasta
+ahora la app no lo sabía representar: obligaba a inventar un rival.
+
+El partido queda con el mismo equipo de los dos lados. No es un truco para
+esquivar el modelo: en un partido interno los dos lados son de verdad el mismo
+equipo, y así todo lo que ya existe —convocatorias, cobros, balance— sigue
+funcionando sin enterarse de nada. Lo único que cambia es cuánta gente hay que
+convocar, y eso lo decide el cliente con `players_per_side` y la bandera.
+*/
+func (h *FriendlyHandler) CreateInternal(c *gin.Context) {
+	teamID := c.Param("id")
+	if _, err := h.authz.requireRole(c, teamID, membership.RoleManager); abortAuthz(c, err) {
+		return
+	}
+
+	var req struct {
+		Name           string    `json:"name"     binding:"required"`
+		SportID        string    `json:"sport_id" binding:"required"`
+		StartAt        time.Time `json:"start_at" binding:"required"`
+		Venue          string    `json:"venue"`
+		PlayersPerSide *int      `json:"players_per_side"`
+		VenueCost      *struct {
+			Amount   int64  `json:"amount"   binding:"min=0"`
+			Currency string `json:"currency" binding:"required"`
+		} `json:"venue_cost"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.StartAt.Before(time.Now()) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "match date must be in the future"})
+		return
+	}
+
+	comp := &competition.Competition{
+		SportID:         req.SportID,
+		Type:            competition.TypeFriendly,
+		Name:            req.Name,
+		OrganizerTeamID: teamID,
+		// Activa y no borrador: un amistoso normal arranca en borrador porque le
+		// falta que el rival diga que sí. Acá no falta nadie.
+		Status:         competition.StatusActive,
+		StartAt:        &req.StartAt,
+		Venue:          req.Venue,
+		PlayersPerSide: req.PlayersPerSide,
+		IsInternal:     true,
+	}
+	if req.VenueCost != nil {
+		comp.VenueCost = &competition.VenueCost{Amount: req.VenueCost.Amount, Currency: req.VenueCost.Currency}
+	}
+	if err := h.competitions.Create(c.Request.Context(), comp); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create competition"})
+		return
+	}
+
+	now := time.Now()
+	entry := &competition.Entry{
+		CompetitionID: comp.ID,
+		TeamID:        teamID,
+		Status:        competition.EntryActive,
+		JoinedAt:      &now,
+	}
+	if err := h.competitions.UpsertEntry(c.Request.Context(), entry); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not register the team in the match"})
+		return
+	}
+
+	m := &match.Match{
+		CompetitionID: comp.ID,
+		HomeTeamID:    teamID,
+		AwayTeamID:    teamID,
+		ScheduledAt:   req.StartAt,
+		Venue:         req.Venue,
+		Status:        match.StatusConfirmed,
+	}
+	if err := h.matches.Create(c.Request.Context(), m); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "competition created but match could not be created"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"competition": comp, "match": m})
 }
 
 // Counter POST /friendlies/:challengeId/counter
