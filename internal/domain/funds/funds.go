@@ -26,11 +26,18 @@ type Source struct {
 // mismo partido. Un monto negativo significa que el equipo absorbió la
 // diferencia entre lo recaudado y su mitad del lugar.
 type Entry struct {
-	TeamID    string    `json:"team_id"`
-	Source    Source    `json:"source"`
-	Amount    int64     `json:"amount"`
-	Currency  string    `json:"currency"`
-	UpdatedAt time.Time `json:"updated_at"`
+	TeamID string `json:"team_id"`
+	Source Source `json:"source"`
+	// SourceName es el nombre de la competencia de la que salió el fondo. Lo
+	// resuelve el repositorio en la misma consulta y no el handler pidiendo una
+	// competencia por entrada: con treinta partidos eso eran treinta viajes de
+	// ida y vuelta a la base para pintar treinta líneas de texto.
+	//
+	// Vacío si el origen ya no existe.
+	SourceName string    `json:"source_name,omitempty"`
+	Amount     int64     `json:"amount"`
+	Currency   string    `json:"currency"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Repository interface {

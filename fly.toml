@@ -12,6 +12,25 @@ primary_region = 'gru'
 
 [env]
   PORT = '8080'
+  # Sin esto Gin corre en modo debug: vuelca las rutas al arrancar y escribe
+  # avisos de desarrollo en los logs de producción.
+  GIN_MODE = 'release'
+  # Orígenes del frontend web. No es un secreto —viaja en el header
+  # Access-Control-Allow-Origin de cada respuesta— así que va versionado acá y
+  # no en `fly secrets`.
+  #
+  # www.zports.cl no está porque redirige (307) al ápex: el navegador termina
+  # parado en zports.cl y es ese el Origin que manda. Si algún día el redirect
+  # se saca, hay que agregarlo — para el navegador son orígenes distintos.
+  #
+  # Los previews de Vercel quedan afuera a propósito: estrenan subdominio en
+  # cada commit y habilitarlos haría que cualquier rama a medio hacer escriba
+  # en la base de producción. Cuando haga falta, va con una app de staging
+  # aparte y no abriendo esta.
+  #
+  # Esta lista reemplaza a los localhost del dev de Expo, que no hacen falta acá:
+  # la app móvil no manda header Origin y CORS no la afecta.
+  CORS_ALLOWED_ORIGINS = 'https://zports.cl,https://zports-web.vercel.app'
 
 [http_service]
   internal_port = 8080
@@ -20,6 +39,16 @@ primary_region = 'gru'
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
+
+  # Sin check, Fly manda tráfico a la máquina aunque el proceso esté colgado.
+  # Pega contra /health, que a propósito no toca la base: si pingueara a Neon,
+  # un hipo de Neon marcaría la máquina como caída y agravaría el incidente.
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
   memory = '256mb'

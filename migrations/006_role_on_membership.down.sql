@@ -1,3 +1,0 @@
-ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'player';
-
-ALTER TABLE memberships DROP COLUMN role;

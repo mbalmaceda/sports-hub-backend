@@ -130,13 +130,5 @@ func (r *FeeRepository) UpdateStatus(ctx context.Context, id string, status fee.
 }
 
 func collectObligations(rows pgx.Rows) ([]*fee.Obligation, error) {
-	var result []*fee.Obligation
-	for rows.Next() {
-		o, err := scanObligation(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, o)
-	}
-	return result, rows.Err()
+	return collect(rows, scanObligation)
 }

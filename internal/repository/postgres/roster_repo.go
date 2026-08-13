@@ -75,15 +75,11 @@ func (r *RosterRepository) ListByTeam(ctx context.Context, teamID string) ([]*me
 	}
 	defer rows.Close()
 
-	var members []*membership.TeamMember
-	for rows.Next() {
-		m, err := scanTeamMember(rows)
-		if err != nil {
-			return nil, fmt.Errorf("membership.ListByTeam scan: %w", err)
-		}
-		members = append(members, m)
+	members, err := collect(rows, scanTeamMember)
+	if err != nil {
+		return nil, fmt.Errorf("membership.ListByTeam scan: %w", err)
 	}
-	return members, rows.Err()
+	return members, nil
 }
 
 // ListByUser lista todos los equipos (y el rol en cada uno) del usuario autenticado.
@@ -96,15 +92,11 @@ func (r *RosterRepository) ListByUser(ctx context.Context, userID string) ([]*me
 	}
 	defer rows.Close()
 
-	var members []*membership.TeamMember
-	for rows.Next() {
-		m, err := scanTeamMember(rows)
-		if err != nil {
-			return nil, fmt.Errorf("membership.ListByUser scan: %w", err)
-		}
-		members = append(members, m)
+	members, err := collect(rows, scanTeamMember)
+	if err != nil {
+		return nil, fmt.Errorf("membership.ListByUser scan: %w", err)
 	}
-	return members, rows.Err()
+	return members, nil
 }
 
 func (r *RosterRepository) GetMemberByID(ctx context.Context, membershipID string) (*membership.TeamMember, error) {

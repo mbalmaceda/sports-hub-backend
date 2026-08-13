@@ -8,6 +8,26 @@ Todos los endpoints protegidos requieren header:
 Authorization: Bearer <access_token>
 ```
 
+El access token dura **15 minutos**. Cuando vence, la respuesta es **401** y el
+cliente tiene que llamar a `/auth/refresh` y reintentar. Es el flujo normal, no
+un error: la sesión larga la sostiene el refresh token, que dura 30 días.
+
+Toda respuesta trae `X-Request-Id`. Si algo falla, ese id es lo que permite
+encontrar la request en los logs.
+
+### Límites de peticiones
+
+| Endpoint | Límite |
+|---|---|
+| `POST /auth/login` | 10/min por IP, y 5 cada 15 min por cuenta |
+| `POST /auth/register` | 5/hora por IP |
+| `POST /auth/refresh` | 30/min por IP |
+| `GET /people/lookup`, `GET /teams/search` | 30/min por usuario |
+
+Al pasarse, la respuesta es **429** con header `Retry-After` en segundos.
+
+El cuerpo de un request no puede pasar de **1 MB**; más que eso devuelve **413**.
+
 ---
 
 ## Auth
@@ -25,12 +45,15 @@ módulo 11 chileno: uno inventado devuelve **400**. La app móvil además lo exi
 para crear la cuenta, porque es la llave con la que un manager encuentra a un
 jugador para invitarlo.
 
+La contraseña va de **10 a 72 bytes**. El tope es de bcrypt, que ignora en
+silencio lo que pase de ahí. El email se guarda en minúscula.
+
 **Body**
 ```json
 {
   "name": "Mirko Balmaceda",
   "email": "mirko@example.com",
-  "password": "minimo6chars",
+  "password": "minimo10chars",
   "tax_id": "12.345.678-5",
   "favorite_sport": "football",
   "height_cm": 175,
@@ -74,18 +97,33 @@ jugador para invitarlo.
 ---
 
 ### POST `/auth/login`
+El email no distingue mayúsculas: `Mirko@x.com` y `mirko@x.com` son la misma
+cuenta.
+
 **Body**
 ```json
-{ "email": "mirko@example.com", "password": "minimo6chars" }
+{ "email": "mirko@example.com", "password": "minimo10chars" }
 ```
 
 **Response 200** — igual que register  
-**Response 401** `{ "error": "invalid credentials" }`
+**Response 401** `{ "error": "invalid credentials" }` — mismo mensaje si el email
+no existe o si la contraseña está mal  
+**Response 429** — demasiados intentos, ver `Retry-After`
 
 ---
 
 ### POST `/auth/refresh`
-El refresh token se **rota** en cada uso.
+El refresh token se **rota** en cada uso: el que se manda deja de servir y la
+respuesta trae uno nuevo. Hay que guardar el nuevo.
+
+**Reutilización.** Mandar un refresh token ya rotado revoca **todas** las
+sesiones de esa cadena, incluida la de quien lo esté usando. Es la defensa
+contra un token robado, y significa que el cliente no puede reintentar con un
+token viejo: si perdió el nuevo, tiene que volver a hacer login.
+
+Dos refresh simultáneos con el mismo token —lo que pasa cuando varias requests
+reciben 401 a la vez— **no** cuentan como reutilización: hay una ventana de 30
+segundos en la que los dos reciben un token válido.
 
 **Body**
 ```json
@@ -100,15 +138,31 @@ El refresh token se **rota** en cada uso.
 }
 ```
 
+**Response 401** `{ "error": "invalid or expired refresh token" }` — token
+inexistente, vencido, revocado o reutilizado; no se distingue cuál
+
 ---
 
 ### POST `/auth/logout`
-Invalida el refresh token en la DB.
+Cierra la sesión de este dispositivo: revoca la cadena entera, no solo el último
+token.
+
+Devuelve **200** aunque el token no exista, para no confirmar cuáles son válidos.
 
 **Body**
 ```json
 { "refresh_token": "5e7a..." }
 ```
+
+**Response 200** `{ "status": "ok" }`
+
+---
+
+### POST `/auth/logout-all` 🔒
+Cierra **todas** las sesiones del usuario, en todos sus dispositivos. Requiere
+access token válido.
+
+Sirve para el caso "creo que alguien entró a mi cuenta".
 
 **Response 200** `{ "status": "ok" }`
 

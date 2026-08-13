@@ -78,15 +78,11 @@ func (r *TeamRepository) List(ctx context.Context) ([]*team.Team, error) {
 	}
 	defer rows.Close()
 
-	var teams []*team.Team
-	for rows.Next() {
-		t, err := scanTeam(rows)
-		if err != nil {
-			return nil, fmt.Errorf("team.List scan: %w", err)
-		}
-		teams = append(teams, t)
+	teams, err := collect(rows, scanTeam)
+	if err != nil {
+		return nil, fmt.Errorf("team.List scan: %w", err)
 	}
-	return teams, rows.Err()
+	return teams, nil
 }
 
 func (r *TeamRepository) UpdateFeeConfig(ctx context.Context, id string, cfg team.FeeConfig) error {
@@ -115,15 +111,11 @@ func (r *TeamRepository) SearchByName(ctx context.Context, query string) ([]*tea
 	}
 	defer rows.Close()
 
-	var teams []*team.Team
-	for rows.Next() {
-		t, err := scanTeam(rows)
-		if err != nil {
-			return nil, fmt.Errorf("team.SearchByName scan: %w", err)
-		}
-		teams = append(teams, t)
+	teams, err := collect(rows, scanTeam)
+	if err != nil {
+		return nil, fmt.Errorf("team.SearchByName scan: %w", err)
 	}
-	return teams, rows.Err()
+	return teams, nil
 }
 
 const bankAccountColumns = `

@@ -42,15 +42,7 @@ func scanCharge(row pgx.Row) (*charge.Charge, error) {
 }
 
 func collectCharges(rows pgx.Rows) ([]*charge.Charge, error) {
-	var result []*charge.Charge
-	for rows.Next() {
-		ch, err := scanCharge(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, ch)
-	}
-	return result, rows.Err()
+	return collect(rows, scanCharge)
 }
 
 func (r *ChargeRepository) FindByID(ctx context.Context, id string) (*charge.Charge, error) {

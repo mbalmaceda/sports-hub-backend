@@ -49,15 +49,7 @@ func scanExpense(row pgx.Row) (*expense.Expense, error) {
 }
 
 func collectExpenses(rows pgx.Rows) ([]*expense.Expense, error) {
-	var result []*expense.Expense
-	for rows.Next() {
-		e, err := scanExpense(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, e)
-	}
-	return result, rows.Err()
+	return collect(rows, scanExpense)
 }
 
 func (r *ExpenseRepository) Create(ctx context.Context, input expense.CreateInput) (*expense.Expense, error) {

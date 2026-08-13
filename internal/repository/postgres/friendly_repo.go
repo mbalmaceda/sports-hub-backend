@@ -59,15 +59,11 @@ func (r *FriendlyRepository) ListByTeam(ctx context.Context, teamID string) ([]*
 	}
 	defer rows.Close()
 
-	var result []*friendly.Challenge
-	for rows.Next() {
-		ch, err := scanChallenge(rows)
-		if err != nil {
-			return nil, fmt.Errorf("friendly.ListByTeam: scan: %w", err)
-		}
-		result = append(result, ch)
+	result, err := collect(rows, scanChallenge)
+	if err != nil {
+		return nil, fmt.Errorf("friendly.ListByTeam: scan: %w", err)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // Create inserta el desafío y su primera propuesta juntos. Un desafío sin
@@ -134,15 +130,13 @@ func (r *FriendlyRepository) ExpireStale(ctx context.Context, now time.Time) ([]
 	}
 	defer rows.Close()
 
-	var competitionIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("friendly.ExpireStale: scan: %w", err)
-		}
-		competitionIDs = append(competitionIDs, id)
+	// RowTo[string] es el scanner que trae pgx para resultados de una sola
+	// columna: no hace falta escribir uno para leer ids.
+	competitionIDs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("friendly.ExpireStale: scan: %w", err)
 	}
-	return competitionIDs, rows.Err()
+	return competitionIDs, nil
 }
 
 const proposalColumns = `
@@ -178,15 +172,11 @@ func (r *FriendlyRepository) ListProposals(ctx context.Context, challengeID stri
 	}
 	defer rows.Close()
 
-	var result []*friendly.Proposal
-	for rows.Next() {
-		p, err := scanProposal(rows)
-		if err != nil {
-			return nil, fmt.Errorf("friendly.ListProposals: scan: %w", err)
-		}
-		result = append(result, p)
+	result, err := collect(rows, scanProposal)
+	if err != nil {
+		return nil, fmt.Errorf("friendly.ListProposals: scan: %w", err)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 func (r *FriendlyRepository) LatestProposal(ctx context.Context, challengeID string) (*friendly.Proposal, error) {

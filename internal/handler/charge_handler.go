@@ -304,15 +304,9 @@ func (h *ChargeHandler) Funds(c *gin.Context) {
 	var total int64
 	var currency string
 	for _, e := range entries {
-		name := ""
-		if e.Source.Type == funds.SourceMatchCost {
-			if comp, err := h.competitions.FindByID(c.Request.Context(), e.Source.ID); err == nil {
-				name = comp.Name
-			}
-		}
 		items = append(items, item{
 			Source:    e.Source,
-			Name:      name,
+			Name:      e.SourceName,
 			Amount:    e.Amount,
 			Currency:  e.Currency,
 			UpdatedAt: e.UpdatedAt,

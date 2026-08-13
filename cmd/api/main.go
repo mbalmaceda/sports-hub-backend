@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -14,6 +19,7 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/db"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
+	"github.com/mbalmaceda/sports-hub-backend/internal/middleware"
 	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/notification/expo"
 	"github.com/mbalmaceda/sports-hub-backend/internal/repository/postgres"
@@ -29,6 +35,11 @@ func main() {
 		slog.Error("config error", "error", err)
 		os.Exit(1)
 	}
+
+	// Contexto de vida del proceso: se cancela con SIGINT/SIGTERM, que es lo que
+	// manda Fly al apagar una máquina por inactividad o al desplegar.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	pool, err := db.Connect(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -64,10 +75,35 @@ func main() {
 		slog.Error("firebase error", "error", err)
 		os.Exit(1)
 	}
+	defer firebaseAuth.Close()
 	slog.Info("firebase", "enabled", firebaseAuth.Enabled())
 
+	// El firmante guarda el secreto actual y el anterior, para poder rotar
+	// JWT_SECRET sin cortar las sesiones abiertas.
+	signer := auth.NewSigner(cfg.JWTSecret, cfg.JWTSecretPrevious)
+
+	// Limpieza periódica de refresh tokens vencidos.
+	auth.StartTokenReaper(ctx, tokenRepo, slog.Default())
+
+	// Limitadores. Están en memoria y son exactos mientras Fly corra una sola
+	// máquina; con varias, el límite efectivo se multiplica por la cantidad.
+	loginByIP := middleware.New(10, time.Minute)
+	loginByAccount := middleware.New(5, 15*time.Minute)
+	registerByIP := middleware.New(5, time.Hour)
+	refreshByIP := middleware.New(30, time.Minute)
+	// La búsqueda de personas es por RUT: iterarla devuelve nombres, así que es
+	// una superficie de enumeración de datos personales y no solo un buscador.
+	lookupByUser := middleware.New(30, time.Minute)
+	defer func() {
+		for _, l := range []*middleware.Limiter{
+			loginByIP, loginByAccount, registerByIP, refreshByIP, lookupByUser,
+		} {
+			l.Stop()
+		}
+	}()
+
 	// Handlers
-	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, cfg.JWTSecret)
+	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, signer, loginByAccount, slog.Default())
 	userHandler := handler.NewUserHandler(userRepo)
 	firebaseHandler := handler.NewFirebaseHandler(firebaseAuth)
 	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo, firebaseAuth)
@@ -83,31 +119,58 @@ func main() {
 
 	// Router
 	r := gin.New()
-	r.Use(gin.Logger())
+
+	// Detrás del proxy de Fly y de ningún otro: de esto depende que los
+	// limitadores de abajo no se puedan saltar falsificando X-Forwarded-For.
+	if err := middleware.ConfigureTrustedProxies(r); err != nil {
+		slog.Error("could not set trusted proxies", "error", err)
+		os.Exit(1)
+	}
+
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger(slog.Default()))
 	r.Use(gin.Recovery())
+	r.Use(middleware.SecureHeaders())
+	r.Use(middleware.BodyLimit(cfg.MaxBodyBytes))
 	if cfg.CORSEnabled {
 		r.Use(cors.New(cors.Config{
-			AllowOrigins:     cfg.CORSAllowedOrigins,
-			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+			AllowOrigins: cfg.CORSAllowedOrigins,
+			// Los preview deploys de Vercel estrenan subdominio en cada commit,
+			// así que no se pueden enumerar. Solo se consulta cuando el origen
+			// no estaba en la lista exacta.
+			AllowOriginFunc: cfg.AllowOrigin,
+			AllowMethods:    []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowHeaders:    []string{"Origin", "Content-Type", "Authorization"},
+			// Los tokens viajan en Authorization, no en cookies: el navegador no
+			// tiene credenciales que mandar solo, y habilitarlas obligaría a
+			// dejar de aceptar orígenes por patrón.
 			AllowCredentials: false,
+			ExposeHeaders:    []string{"X-Request-Id"},
+			// Sin esto hay un preflight OPTIONS por cada request.
+			MaxAge: 12 * time.Hour,
 		}))
-		slog.Info("cors enabled", "allowed_origins", cfg.CORSAllowedOrigins)
+		slog.Info("cors enabled",
+			"allowed_origins", cfg.CORSAllowedOrigins,
+			"allowed_origin_regex", cfg.CORSAllowedOriginRegex)
 	} else {
 		slog.Info("cors disabled")
 	}
 
 	r.GET("/health", handler.Health)
 
-	r.POST("/auth/register", authHandler.Register)
-	r.POST("/auth/login", authHandler.Login)
-	r.POST("/auth/refresh", authHandler.Refresh)
+	r.POST("/auth/register", registerByIP.ByIP(), authHandler.Register)
+	// El límite por cuenta va adentro del handler, donde ya está parseado el
+	// email: acá solo se puede limitar por IP.
+	r.POST("/auth/login", loginByIP.ByIP(), authHandler.Login)
+	r.POST("/auth/refresh", refreshByIP.ByIP(), authHandler.Refresh)
 	r.POST("/auth/logout", authHandler.Logout)
 
 	// Rutas protegidas — requieren JWT válido
 	protected := r.Group("/")
-	protected.Use(auth.Middleware(cfg.JWTSecret))
+	protected.Use(auth.Middleware(signer))
 	{
+		protected.POST("/auth/logout-all", authHandler.LogoutAll)
+
 		protected.GET("/users/me", userHandler.Me)
 		protected.PATCH("/users/me", userHandler.UpdateProfile)
 		protected.DELETE("/users/me", userHandler.DeleteAccount)
@@ -196,8 +259,8 @@ func main() {
 		protected.DELETE("/expenses/:expenseId", expenseHandler.Delete)
 
 		// ── Incorporación ──
-		protected.GET("/people/lookup", onboardingHandler.FindPerson)
-		protected.GET("/teams/search", onboardingHandler.SearchTeams)
+		protected.GET("/people/lookup", lookupByUser.ByUser(), onboardingHandler.FindPerson)
+		protected.GET("/teams/search", lookupByUser.ByUser(), onboardingHandler.SearchTeams)
 		protected.GET("/me/team-invitations", onboardingHandler.ListMyInvitations)
 		protected.GET("/teams/:id/invitations", onboardingHandler.ListTeamInvitations)
 		protected.POST("/teams/:id/invitations", onboardingHandler.InvitePerson)
@@ -207,9 +270,41 @@ func main() {
 		protected.POST("/join-requests/:requestId/respond", onboardingHandler.RespondToJoinRequest)
 	}
 
-	slog.Info("server starting", "port", cfg.Port)
-	if err := r.Run(":" + cfg.Port); err != nil {
+	// Servidor explícito en vez de r.Run(): lo que importa son los timeouts, que
+	// el default de Go deja en cero. Sin ReadHeaderTimeout, una conexión que
+	// manda cabeceras de a un byte se queda abierta para siempre, y en una
+	// máquina de 256 MB no hacen falta muchas para dejarla sin memoria.
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: config.ReadHeaderTimeout,
+		ReadTimeout:       config.ReadTimeout,
+		WriteTimeout:      config.WriteTimeout,
+		IdleTimeout:       config.IdleTimeout,
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		slog.Info("server starting", "port", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
 		slog.Error("server error", "error", err)
 		os.Exit(1)
+	case <-ctx.Done():
+		// Fly manda SIGTERM al desplegar y al suspender la máquina por falta de
+		// tráfico (auto_stop_machines). Hasta acá eso cortaba los requests en
+		// vuelo; ahora se les da tiempo de terminar.
+		slog.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("shutdown error", "error", err)
+		}
+		slog.Info("stopped")
 	}
 }

@@ -12,4 +12,9 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /run-app /usr/local/bin/
+
+# El binario es estático y no escribe en disco, así que no hay ninguna razón
+# para que corra como root. `nobody` ya existe en la imagen base.
+USER 65534:65534
+
 CMD ["run-app"]

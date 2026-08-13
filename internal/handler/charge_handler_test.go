@@ -426,16 +426,15 @@ func TestFunds_ListsTeamFunds(t *testing.T) {
 		ID: "m-1", UserID: "user-player", TeamID: homeTeam,
 		Role: membership.RolePlayer, Status: membership.StatusActive,
 	}, nil)
-	perSide := 7
-	d.competitions.On("FindByID", mock.Anything, "comp-1").Return(&competition.Competition{
-		ID: "comp-1", Name: "Amistoso vs Los Rayos", Type: competition.TypeFriendly,
-		OrganizerTeamID: homeTeam, PlayersPerSide: &perSide,
-	}, nil)
+	// El nombre del origen viene resuelto por el repositorio, en la misma
+	// consulta que trae los fondos. El handler ya no pide una competencia por
+	// entrada, así que acá tampoco hay que simularla.
 	d.funds.On("ListByTeam", mock.Anything, homeTeam).Return([]*funds.Entry{
 		{
-			TeamID: homeTeam,
-			Source: funds.Source{Type: funds.SourceMatchCost, ID: "comp-1"},
-			Amount: 6000, Currency: "CLP",
+			TeamID:     homeTeam,
+			Source:     funds.Source{Type: funds.SourceMatchCost, ID: "comp-1"},
+			SourceName: "Amistoso vs Los Rayos",
+			Amount:     6000, Currency: "CLP",
 		},
 	}, nil)
 

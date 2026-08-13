@@ -118,6 +118,16 @@ func main() {
 	flag.Parse()
 
 	_ = godotenv.Load()
+
+	// Este comando crea usuarios con una contraseña conocida y publicada en este
+	// mismo archivo. Corrido contra una base compartida, esas cuentas quedan a
+	// disposición de cualquiera que lea el repositorio. El opt-in explícito
+	// existe para que sea imposible hacerlo por accidente, apuntando el
+	// DATABASE_URL equivocado.
+	if os.Getenv("ALLOW_SEED") != "true" {
+		log.Fatal("seed deshabilitado: exporta ALLOW_SEED=true y verifica a qué base apunta DATABASE_URL")
+	}
+
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {

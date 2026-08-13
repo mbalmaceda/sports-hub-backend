@@ -83,15 +83,7 @@ func scanTeamInvitation(row pgx.Row) (*onboarding.TeamInvitation, error) {
 }
 
 func collectInvitations(rows pgx.Rows) ([]*onboarding.TeamInvitation, error) {
-	var result []*onboarding.TeamInvitation
-	for rows.Next() {
-		inv, err := scanTeamInvitation(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, inv)
-	}
-	return result, rows.Err()
+	return collect(rows, scanTeamInvitation)
 }
 
 func (r *OnboardingRepository) ListInvitationsForTeam(ctx context.Context, teamID string) ([]*onboarding.TeamInvitation, error) {
@@ -185,15 +177,11 @@ func (r *OnboardingRepository) listJoinRequests(ctx context.Context, where strin
 	}
 	defer rows.Close()
 
-	var result []*onboarding.JoinRequest
-	for rows.Next() {
-		req, err := scanJoinRequest(rows)
-		if err != nil {
-			return nil, fmt.Errorf("onboarding.listJoinRequests: scan: %w", err)
-		}
-		result = append(result, req)
+	result, err := collect(rows, scanJoinRequest)
+	if err != nil {
+		return nil, fmt.Errorf("onboarding.listJoinRequests: scan: %w", err)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 func (r *OnboardingRepository) ListJoinRequestsForTeam(ctx context.Context, teamID string) ([]*onboarding.JoinRequest, error) {

@@ -66,12 +66,25 @@ func (m *MockTokenRepo) FindByHash(ctx context.Context, hash string) (*auth.Refr
 	return args.Get(0).(*auth.RefreshToken), args.Error(1)
 }
 
-func (m *MockTokenRepo) Delete(ctx context.Context, id string) error {
-	return m.Called(ctx, id).Error(0)
+func (m *MockTokenRepo) MarkUsed(ctx context.Context, id string, at time.Time) error {
+	return m.Called(ctx, id, at).Error(0)
 }
 
-func (m *MockTokenRepo) DeleteByHash(ctx context.Context, hash string) error {
-	return m.Called(ctx, hash).Error(0)
+func (m *MockTokenRepo) RevokeFamily(ctx context.Context, familyID string, at time.Time) error {
+	return m.Called(ctx, familyID, at).Error(0)
+}
+
+func (m *MockTokenRepo) RevokeAllForUser(ctx context.Context, userID string, at time.Time) error {
+	return m.Called(ctx, userID, at).Error(0)
+}
+
+func (m *MockTokenRepo) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
+	args := m.Called(ctx, before)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *MockTokenRepo) TrimFamilies(ctx context.Context, userID string, keep int) error {
+	return m.Called(ctx, userID, keep).Error(0)
 }
 
 // --- TeamRepository ---

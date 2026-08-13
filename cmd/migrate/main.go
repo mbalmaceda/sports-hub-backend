@@ -28,6 +28,21 @@ func main() {
 		direction = os.Args[1]
 	}
 
+	// Las migraciones no van por el pooler.
+	//
+	// golang-migrate se serializa con pg_advisory_lock, que es un lock de
+	// sesión. Un pooler en modo transacción devuelve la conexión al pool entre
+	// sentencias, así que el lock puede quedar tomado en un backend distinto
+	// del que después lo libera: dos migraciones simultáneas dejan de excluirse,
+	// que es justo lo único que ese lock tenía que garantizar.
+	//
+	// Es un aviso y no un error porque el endpoint directo se llama distinto en
+	// cada proveedor y adivinarlo sería peor que avisar.
+	if strings.Contains(dbURL, "-pooler.") {
+		slog.Warn("DATABASE_URL apunta al pooler; las migraciones deberían ir al endpoint directo " +
+			"(el mismo host sin '-pooler') porque el lock de golang-migrate es de sesión")
+	}
+
 	// golang-migrate pgx v5 driver requiere scheme "pgx5://"
 	migrateURL := strings.NewReplacer(
 		"postgresql://", "pgx5://",
@@ -52,8 +67,20 @@ func main() {
 		err = m.Up()
 	case "down":
 		err = m.Down()
+	case "drop":
+		// Borra TODO, incluida la tabla de versiones: deja la base como recién
+		// creada. Es la única forma de volver a aplicar el esquema base sobre
+		// una base que ya tiene una versión registrada.
+		//
+		// Pide el opt-in explícito por lo obvio: escrito sin querer contra el
+		// DATABASE_URL equivocado, no hay nada que deshacer.
+		if os.Getenv("ALLOW_DROP") != "true" {
+			slog.Error("drop deshabilitado: exporta ALLOW_DROP=true y verifica a qué base apunta DATABASE_URL")
+			os.Exit(1)
+		}
+		err = m.Drop()
 	default:
-		slog.Error("unknown direction, use 'up' or 'down'", "got", direction)
+		slog.Error("unknown command, use 'up', 'down' or 'drop'", "got", direction)
 		os.Exit(1)
 	}
 

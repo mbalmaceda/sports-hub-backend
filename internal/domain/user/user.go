@@ -66,24 +66,35 @@ func (d Date) Value() (driver.Value, error) {
 // User no tiene rol: el rol es por membership (ver domain/membership),
 // porque un usuario puede tener un rol distinto en cada equipo.
 type User struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Email         string     `json:"email"`
-	TaxID         string     `json:"tax_id,omitempty"`
-	Phone         string     `json:"phone,omitempty"`
-	AvatarURL     string     `json:"avatar_url,omitempty"`
-	FavoriteSport string     `json:"favorite_sport,omitempty"`
-	HeightCm      *int       `json:"height_cm,omitempty"`
-	WeightKg      *float64   `json:"weight_kg,omitempty"`
-	BirthDate     *Date      `json:"birth_date,omitempty"`
-	Alias         string     `json:"alias,omitempty"`
-	City          string     `json:"city,omitempty"`
-	DominantSide  string     `json:"dominant_side,omitempty"`
-	Bio           string     `json:"bio,omitempty"`
-	PushToken     string     `json:"-"`
-	PasswordHash  string     `json:"-"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Email         string    `json:"email"`
+	TaxID         string    `json:"tax_id,omitempty"`
+	Phone         string    `json:"phone,omitempty"`
+	AvatarURL     string    `json:"avatar_url,omitempty"`
+	FavoriteSport string    `json:"favorite_sport,omitempty"`
+	HeightCm      *int      `json:"height_cm,omitempty"`
+	WeightKg      *float64  `json:"weight_kg,omitempty"`
+	BirthDate     *Date     `json:"birth_date,omitempty"`
+	Alias         string    `json:"alias,omitempty"`
+	City          string    `json:"city,omitempty"`
+	DominantSide  string    `json:"dominant_side,omitempty"`
+	Bio           string    `json:"bio,omitempty"`
+	PushToken     string    `json:"-"`
+	PasswordHash  string    `json:"-"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// NormalizeEmail deja el email en la forma en que se guarda y se busca.
+//
+// Sin esto "Mirko@x.com" y "mirko@x.com" son dos cuentas distintas: la columna
+// es UNIQUE pero case-sensitive, así que quien se registra con mayúsculas y
+// después escribe todo en minúscula no puede entrar. La parte local del email
+// es técnicamente sensible a mayúsculas según el RFC 5321, pero ningún
+// proveedor real lo aplica y tratarla así solo produce cuentas duplicadas.
+func NormalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }
 
 type ProfileUpdate struct {

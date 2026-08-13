@@ -40,15 +40,7 @@ func scanMatch(row pgx.Row) (*match.Match, error) {
 }
 
 func collectMatches(rows pgx.Rows) ([]*match.Match, error) {
-	var result []*match.Match
-	for rows.Next() {
-		m, err := scanMatch(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, m)
-	}
-	return result, rows.Err()
+	return collect(rows, scanMatch)
 }
 
 func (r *MatchRepository) FindByID(ctx context.Context, id string) (*match.Match, error) {
@@ -139,15 +131,7 @@ func scanCallup(row pgx.Row) (*match.Callup, error) {
 }
 
 func collectCallups(rows pgx.Rows) ([]*match.Callup, error) {
-	var result []*match.Callup
-	for rows.Next() {
-		cu, err := scanCallup(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, cu)
-	}
-	return result, rows.Err()
+	return collect(rows, scanCallup)
 }
 
 func (r *MatchRepository) ListCallups(ctx context.Context, matchID string) ([]*match.Callup, error) {

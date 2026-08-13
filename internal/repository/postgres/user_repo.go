@@ -60,9 +60,12 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 	return u, nil
 }
 
+// FindByEmail busca por `lower(email)` y no por `email`, que es lo que hace que
+// el login funcione escriba como escriba el usuario. Va contra el índice único
+// parcial de la migración 020.
 func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*user.User, error) {
-	q := `SELECT` + userColumns + ` FROM users WHERE email = $1 AND deleted_at IS NULL`
-	u, err := scanUser(r.pool.QueryRow(ctx, q, email))
+	q := `SELECT` + userColumns + ` FROM users WHERE lower(email) = $1 AND deleted_at IS NULL`
+	u, err := scanUser(r.pool.QueryRow(ctx, q, user.NormalizeEmail(email)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, user.ErrNotFound
 	}
@@ -83,6 +86,10 @@ func (r *UserRepository) Create(ctx context.Context, u *user.User) error {
 			$6, $7, $8, NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, '')
 		)
 		RETURNING id, created_at, updated_at`
+	// Se normaliza también acá y no solo en el handler: el repositorio es el
+	// borde real de la base, y es lo que garantiza que nunca entre un email con
+	// mayúsculas por más caminos de escritura que se agreguen después.
+	u.Email = user.NormalizeEmail(u.Email)
 	err := r.pool.QueryRow(ctx, q,
 		u.Name, u.Email, u.PasswordHash, u.TaxID, u.FavoriteSport,
 		u.HeightCm, u.WeightKg, u.BirthDate, u.Alias, u.City, u.DominantSide, u.Bio,
@@ -158,15 +165,8 @@ func (r *UserRepository) PushTokensByUserIDs(ctx context.Context, userIDs []stri
 	}
 	defer rows.Close()
 
-	var tokens []string
-	for rows.Next() {
-		var token string
-		if err := rows.Scan(&token); err != nil {
-			return nil, fmt.Errorf("user.PushTokensByUserIDs: %w", err)
-		}
-		tokens = append(tokens, token)
-	}
-	if err := rows.Err(); err != nil {
+	tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("user.PushTokensByUserIDs: %w", err)
 	}
 	return tokens, nil

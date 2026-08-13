@@ -83,15 +83,11 @@ func (r *CompetitionRepository) ListByTeam(ctx context.Context, teamID string) (
 	}
 	defer rows.Close()
 
-	var result []*competition.Competition
-	for rows.Next() {
-		c, err := scanCompetition(rows)
-		if err != nil {
-			return nil, fmt.Errorf("competition.ListByTeam: scan: %w", err)
-		}
-		result = append(result, c)
+	result, err := collect(rows, scanCompetition)
+	if err != nil {
+		return nil, fmt.Errorf("competition.ListByTeam: scan: %w", err)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 func (r *CompetitionRepository) Create(ctx context.Context, c *competition.Competition) error {
@@ -158,15 +154,11 @@ func (r *CompetitionRepository) ListEntries(ctx context.Context, competitionID s
 	}
 	defer rows.Close()
 
-	var result []*competition.Entry
-	for rows.Next() {
-		e := &competition.Entry{}
-		if err := rows.Scan(&e.ID, &e.CompetitionID, &e.TeamID, &e.Status, &e.JoinedAt); err != nil {
-			return nil, fmt.Errorf("competition.ListEntries: scan: %w", err)
-		}
-		result = append(result, e)
+	result, err := collect(rows, scanEntry)
+	if err != nil {
+		return nil, fmt.Errorf("competition.ListEntries: scan: %w", err)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 func (r *CompetitionRepository) UpsertEntry(ctx context.Context, e *competition.Entry) error {
@@ -190,6 +182,15 @@ func (r *CompetitionRepository) UpsertEntry(ctx context.Context, e *competition.
 
 const invitationColumns = `
 	id, competition_id, from_team_id, to_team_id, status, expires_at, created_at, responded_at`
+
+func scanEntry(row pgx.Row) (*competition.Entry, error) {
+	e := &competition.Entry{}
+	err := row.Scan(&e.ID, &e.CompetitionID, &e.TeamID, &e.Status, &e.JoinedAt)
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
+}
 
 func scanInvitation(row pgx.Row) (*competition.Invitation, error) {
 	inv := &competition.Invitation{}
@@ -223,15 +224,11 @@ func (r *CompetitionRepository) ListInvitationsForTeam(ctx context.Context, team
 	}
 	defer rows.Close()
 
-	var result []*competition.Invitation
-	for rows.Next() {
-		inv, err := scanInvitation(rows)
-		if err != nil {
-			return nil, fmt.Errorf("competition.ListInvitationsForTeam: scan: %w", err)
-		}
-		result = append(result, inv)
+	result, err := collect(rows, scanInvitation)
+	if err != nil {
+		return nil, fmt.Errorf("competition.ListInvitationsForTeam: scan: %w", err)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // ExpireStaleInvitations vence de una sola pasada todas las invitaciones sin

@@ -54,15 +54,11 @@ func (r *PaymentRepository) ListByTeam(ctx context.Context, teamID string) ([]*p
 	}
 	defer rows.Close()
 
-	var payments []*payment.Payment
-	for rows.Next() {
-		p, err := scanPayment(rows)
-		if err != nil {
-			return nil, fmt.Errorf("payment.ListByTeam scan: %w", err)
-		}
-		payments = append(payments, p)
+	payments, err := collect(rows, scanPayment)
+	if err != nil {
+		return nil, fmt.Errorf("payment.ListByTeam scan: %w", err)
 	}
-	return payments, rows.Err()
+	return payments, nil
 }
 
 func (r *PaymentRepository) FindByObligationID(ctx context.Context, obligationID string) (*payment.Payment, error) {

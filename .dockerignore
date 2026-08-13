@@ -1,0 +1,17 @@
+# El build hace COPY . ., así que sin esto el .env con el secreto de JWT y la
+# URL de la base entra al contexto y queda en una capa de la imagen de builder.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+
+bin/
+*.exe
+*.test
+*.out
+
+# No aportan al build y lo hacen más lento.
+*.md
+.claude/
