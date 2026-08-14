@@ -16,10 +16,15 @@ import (
 type RosterHandler struct {
 	repo     membership.Repository
 	firebase *firebase.Firebase
+	authz    teamAuthorizer
 }
 
 func NewRosterHandler(repo membership.Repository, fb *firebase.Firebase) *RosterHandler {
-	return &RosterHandler{repo: repo, firebase: fb}
+	return &RosterHandler{
+		repo:     repo,
+		firebase: fb,
+		authz:    teamAuthorizer{memberships: repo},
+	}
 }
 
 // syncMirror refleja en Firestore lo que quedó guardado en Postgres.
@@ -36,16 +41,35 @@ func (h *RosterHandler) syncMirror(ctx context.Context, membershipID string) {
 		slog.Error("mirror: could not read membership", "error", err, "membership_id", membershipID)
 		return
 	}
+	// Va sin MatchID a propósito. Este camino es el de la gestión del plantel, y
+	// no sabe a qué partido entró un invitado; escribir el espejo sin ese dato
+	// le CIERRA la lectura en vivo en vez de abrirla, que es el lado seguro para
+	// equivocarse. El API sigue respondiéndole igual.
 	h.firebase.SyncMembershipAsync(firebase.Membership{
 		TeamID: member.TeamID,
 		UserID: member.UserID,
 		Role:   string(member.Role),
 		Status: string(member.Status),
+		Kind:   string(member.Kind),
 	})
 }
 
+// ListByTeam GET /teams/:id/roster
+//
+// El plantel es de quien está adentro. Sin esta guarda alcanzaba con tener
+// sesión y el id de un equipo para leer su plantel entero, sin pertenecer:
+// el middleware de auth prueba que el JWT es válido y nada más.
+//
+// El listado no trae email ni teléfono —eso vive en la ficha individual, ver
+// `rosterListQuery`—, así que lo que devuelve es quién juega en el equipo y no
+// cómo contactarlo.
 func (h *RosterHandler) ListByTeam(c *gin.Context) {
-	members, err := h.repo.ListByTeam(c.Request.Context(), c.Param("id"))
+	teamID := c.Param("id")
+	if _, err := h.authz.requireMember(c, teamID); abortAuthz(c, err) {
+		return
+	}
+
+	members, err := h.repo.ListByTeam(c.Request.Context(), teamID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list roster"})
 		return
@@ -77,6 +101,15 @@ func (h *RosterHandler) ListMine(c *gin.Context) {
 	c.JSON(http.StatusOK, members)
 }
 
+// GetMember GET /memberships/:membershipId (y /teams/:id/roster/:membershipId)
+//
+// Ficha completa de un jugador: es la única que devuelve email y teléfono, así
+// que el chequeo de pertenencia importa más acá que en el listado.
+//
+// Se lee primero y se autoriza después porque el equipo al que hay que
+// pertenecer sale de la propia membresía: la ruta corta no lo trae en el path.
+// No se filtra nada por leer antes, la respuesta sigue saliendo por un solo
+// lugar.
 func (h *RosterHandler) GetMember(c *gin.Context) {
 	m, err := h.repo.GetMemberByID(c.Request.Context(), c.Param("membershipId"))
 	if errors.Is(err, membership.ErrNotFound) {
@@ -87,6 +120,11 @@ func (h *RosterHandler) GetMember(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
+
+	if _, err := h.authz.requireMember(c, m.TeamID); abortAuthz(c, err) {
+		return
+	}
+
 	c.JSON(http.StatusOK, m)
 }
 
@@ -147,6 +185,58 @@ func (h *RosterHandler) AddMember(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, member)
+}
+
+// PromoteGuest POST /teams/:id/roster/:membershipId/promote
+//
+// Suma al plantel a un invitado que ya jugó: el final feliz del "parche".
+//
+// Es el momento de conversión de esta feature —alguien entró por un enlace de
+// WhatsApp para un sábado y termina siendo del club— y por eso es un acto
+// explícito del manager y no algo que pase solo después de N partidos: cambia lo
+// que la persona ve, y le empieza a generar cuota mensual.
+func (h *RosterHandler) PromoteGuest(c *gin.Context) {
+	teamID := c.Param("id")
+	if _, err := h.authz.requireRole(c, teamID, membership.RoleManager); abortAuthz(c, err) {
+		return
+	}
+
+	membershipID := c.Param("membershipId")
+	target, err := h.repo.GetMemberByID(c.Request.Context(), membershipID)
+	if errors.Is(err, membership.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	// El equipo de la ruta tiene que ser el de la membresía: sin esto, el
+	// manager de un equipo asciende a un invitado de otro.
+	if target.TeamID != teamID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
+		return
+	}
+	if !target.IsGuest() {
+		c.JSON(http.StatusConflict, gin.H{"error": "this member already belongs to the squad"})
+		return
+	}
+
+	if err := h.repo.PromoteGuest(c.Request.Context(), membershipID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not promote the guest"})
+		return
+	}
+
+	// El espejo lleva kind y matchId: al dejar de ser invitado hay que sacarle
+	// el corte que lo encerraba en un partido, o seguiría sin ver el resto.
+	h.syncMirror(c.Request.Context(), membershipID)
+
+	member, err := h.repo.GetMemberByID(c.Request.Context(), membershipID)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "promoted"})
+		return
+	}
+	c.JSON(http.StatusOK, member)
 }
 
 func (h *RosterHandler) UpdateStatus(c *gin.Context) {

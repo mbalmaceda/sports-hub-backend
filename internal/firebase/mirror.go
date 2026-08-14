@@ -24,13 +24,24 @@ type Membership struct {
 	UserID string
 	Role   string
 	Status string
+	// Kind separa al plantel de los invitados de un partido.
+	Kind string
+	// MatchID es a qué partido entró el invitado, y es lo que acota lo que
+	// puede leer en Firestore. Vacío para el plantel, que ve todos.
+	MatchID string
 }
 
 // membershipDoc es lo que se escribe. Los nombres en minúscula son los que
 // aparecen en firestore.rules: cambiarlos acá rompe las reglas en silencio.
 type membershipDoc struct {
-	Role      string    `firestore:"role"`
-	Status    string    `firestore:"status"`
+	Role   string `firestore:"role"`
+	Status string `firestore:"status"`
+	// kind y matchId son lo que las reglas usan para encerrar al invitado en
+	// su partido. Un documento viejo no los tiene, y las reglas leen la
+	// ausencia como "es del plantel": es lo que corresponde, porque antes de
+	// los invitados todas las membresías lo eran.
+	Kind      string    `firestore:"kind"`
+	MatchID   string    `firestore:"matchId"`
 	UpdatedAt time.Time `firestore:"updatedAt"`
 }
 
@@ -50,6 +61,8 @@ func (f *Firebase) SyncMembership(ctx context.Context, m Membership) error {
 	_, err := f.memberRef(m.TeamID, m.UserID).Set(ctx, membershipDoc{
 		Role:      m.Role,
 		Status:    m.Status,
+		Kind:      m.Kind,
+		MatchID:   m.MatchID,
 		UpdatedAt: time.Now().UTC(),
 	})
 	if err != nil {

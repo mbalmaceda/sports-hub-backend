@@ -144,6 +144,12 @@ func (h *FeeHandler) Generate(c *gin.Context) {
 		if m.Status != "active" || !m.PlaysAsPlayer {
 			continue
 		}
+		// El invitado de un partido no paga la cuota del club: vino un sábado,
+		// pagó su cuota de cancha y listo. Cobrarle la mensualidad de un equipo
+		// que no es suyo es la forma más rápida de que desinstale la app.
+		if m.IsGuest() {
+			continue
+		}
 		obligations = append(obligations, &fee.Obligation{
 			TeamID:       t.ID,
 			MembershipID: m.MembershipID,

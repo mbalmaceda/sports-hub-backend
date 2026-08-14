@@ -13,17 +13,21 @@ var (
 )
 
 type Team struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	SportID   string    `json:"sport_id"`
-	ClubID    string    `json:"club_id,omitempty"`
-	Category  string    `json:"category"`
-	LogoURL   string    `json:"logo_url,omitempty"`
-	FeeAmount int64     `json:"fee_amount"`
-	FeeDueDay int       `json:"fee_due_day"`
-	Currency  string    `json:"currency"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	SportID  string `json:"sport_id"`
+	ClubID   string `json:"club_id,omitempty"`
+	Category string `json:"category"`
+	// Ciudad y descripción son datos de exhibición: los llena el alta de equipo
+	// y los muestran la ficha y el buscador. Nada decide nada con ellos.
+	City        string    `json:"city"`
+	Description string    `json:"description"`
+	LogoURL     string    `json:"logo_url,omitempty"`
+	FeeAmount   int64     `json:"fee_amount"`
+	FeeDueDay   int       `json:"fee_due_day"`
+	Currency    string    `json:"currency"`
+	IsActive    bool      `json:"is_active"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // BankAccount son los datos a los que los jugadores le transfieren al equipo.

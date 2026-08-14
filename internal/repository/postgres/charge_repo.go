@@ -243,6 +243,29 @@ func (r *ChargeRepository) Confirm(ctx context.Context, id, confirmedBy string, 
 	return ch, nil
 }
 
+// Waive condona el cargo. Ver el contrato en charge.Repository.
+//
+// El WHERE distingue los dos motivos de no hacer nada: si la fila existe pero
+// no está pendiente, es que ya se pagó, y eso no es un 404.
+func (r *ChargeRepository) Waive(ctx context.Context, id, waivedBy string, at time.Time) (*charge.Charge, error) {
+	q := `UPDATE charges
+		SET status = 'waived', confirmed_at = $1, confirmed_by = $2
+		WHERE id = $3 AND status = 'pending'
+		RETURNING` + chargeColumns
+	ch, err := scanCharge(r.pool.QueryRow(ctx, q, at, waivedBy, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if e := r.pool.QueryRow(ctx, `SELECT TRUE FROM charges WHERE id = $1`, id).Scan(&exists); e != nil {
+			return nil, charge.ErrNotFound
+		}
+		return nil, charge.ErrAlreadySettled
+	}
+	if err != nil {
+		return nil, fmt.Errorf("charge.Waive: %w", err)
+	}
+	return ch, nil
+}
+
 func (r *ChargeRepository) RejectReceipt(ctx context.Context, id string) (*charge.Charge, error) {
 	q := `UPDATE charges
 		SET status = 'pending', receipt_url = NULL, submitted_at = NULL

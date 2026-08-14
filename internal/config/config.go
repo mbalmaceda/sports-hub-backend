@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,9 +30,13 @@ type Config struct {
 	// firma siempre con el actual y se acepta también el anterior mientras
 	// duren los access tokens ya emitidos. Vencida esa ventana se borra.
 	JWTSecretPrevious string
-	// FirebaseServiceAccount es el JSON de la cuenta de servicio, entero, tal
-	// como lo entrega la consola de Firebase. Va como variable y no como archivo
-	// porque en Fly los secretos son variables de entorno.
+	// FirebaseServiceAccount es el JSON de la cuenta de servicio, ya resuelto:
+	// quien lo lee siempre recibe el contenido, nunca una ruta.
+	//
+	// La variable de entorno acepta las dos formas —ver `resolveServiceAccount`—
+	// porque los dos entornos piden cosas distintas: en Fly los secretos son
+	// variables y el JSON va inline; en local, pegar un JSON multilínea en un
+	// `.env` rompe el archivo entero, así que ahí va la ruta al archivo.
 	//
 	// Es opcional: sin ella el backend arranca igual y lo único que no funciona
 	// es lo que necesita Firebase. Exigirla dejaría la API caída por una función
@@ -46,6 +51,36 @@ type Config struct {
 	// MaxBodyBytes corta el cuerpo de cada request. Ningún endpoint recibe
 	// archivos —los comprobantes viajan como URL—, así que 1 MB sobra.
 	MaxBodyBytes int64
+
+	// ── Enlaces de invitación ────────────────────────────────────────────────
+	//
+	// El enlace que se comparte por WhatsApp apunta acá, no a la app: quien lo
+	// recibe es por definición alguien que todavía no la tiene instalada. Este
+	// servidor sirve una página que muestra la invitación y, si la app está,
+	// deja que el sistema la abra directo (App Links / Universal Links).
+
+	// PublicBaseURL es el origen con el que se arman los enlaces compartibles,
+	// sin barra final. Vacío desactiva la página de invitación: mejor no servir
+	// nada que servir enlaces que apuntan a un host equivocado.
+	PublicBaseURL string
+	// AndroidPackageName y AndroidCertFingerprints alimentan assetlinks.json,
+	// que es lo que hace que Android abra la app en vez del navegador. Los
+	// fingerprints son SHA-256 en mayúsculas separados por dos puntos, tal como
+	// los muestra Play Console en "Firma de apps". Puede haber más de uno: la
+	// clave de subida y la de firma de Play son distintas.
+	AndroidPackageName      string
+	AndroidCertFingerprints []string
+	// AppleAppID es "<TeamID>.<BundleID>". Sin cuenta de Apple Developer todavía
+	// no existe, y sin esto no se sirve el apple-app-site-association.
+	AppleAppID string
+	// PlayStoreURL es a dónde mandar a quien no tiene la app. Vacío esconde el
+	// botón en vez de llevar a una página rota.
+	PlayStoreURL string
+}
+
+// InviteLinksEnabled indica si se puede armar y servir un enlace compartible.
+func (c Config) InviteLinksEnabled() bool {
+	return c.PublicBaseURL != ""
 }
 
 func Load() (Config, error) {
@@ -120,17 +155,96 @@ func Load() (Config, error) {
 		maxBodyBytes = parsed
 	}
 
+	// La barra final se recorta acá y no en cada uso: pegada a una ruta produce
+	// `//i/token`, que en algunos proxies no es lo mismo que `/i/token`.
+	publicBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/")
+	if publicBaseURL != "" && !strings.HasPrefix(publicBaseURL, "https://") {
+		// Android e iOS solo verifican App Links sobre HTTPS. Un enlace http
+		// abriría el navegador en vez de la app, en silencio.
+		return Config{}, fmt.Errorf("PUBLIC_BASE_URL must start with https://")
+	}
+
+	fingerprints := make([]string, 0)
+	for _, raw := range strings.Split(os.Getenv("ANDROID_CERT_FINGERPRINTS"), ",") {
+		if trimmed := strings.ToUpper(strings.TrimSpace(raw)); trimmed != "" {
+			fingerprints = append(fingerprints, trimmed)
+		}
+	}
+
+	androidPackage := strings.TrimSpace(os.Getenv("ANDROID_PACKAGE_NAME"))
+	if androidPackage == "" {
+		androidPackage = "com.zports.app"
+	}
+
+	serviceAccount, err := resolveServiceAccount(os.Getenv("FIREBASE_SERVICE_ACCOUNT"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		Port:                   port,
-		DatabaseURL:            dbURL,
-		JWTSecret:              jwtSecret,
-		JWTSecretPrevious:      jwtSecretPrevious,
-		FirebaseServiceAccount: os.Getenv("FIREBASE_SERVICE_ACCOUNT"),
-		CORSEnabled:            corsEnabled,
-		CORSAllowedOrigins:     corsAllowedOrigins,
-		CORSAllowedOriginRegex: corsRegex,
-		MaxBodyBytes:           maxBodyBytes,
+		Port:                    port,
+		DatabaseURL:             dbURL,
+		JWTSecret:               jwtSecret,
+		JWTSecretPrevious:       jwtSecretPrevious,
+		FirebaseServiceAccount:  serviceAccount,
+		CORSEnabled:             corsEnabled,
+		CORSAllowedOrigins:      corsAllowedOrigins,
+		CORSAllowedOriginRegex:  corsRegex,
+		MaxBodyBytes:            maxBodyBytes,
+		PublicBaseURL:           publicBaseURL,
+		AndroidPackageName:      androidPackage,
+		AndroidCertFingerprints: fingerprints,
+		AppleAppID:              strings.TrimSpace(os.Getenv("APPLE_APP_ID")),
+		PlayStoreURL:            strings.TrimSpace(os.Getenv("PLAY_STORE_URL")),
 	}, nil
+}
+
+/*
+resolveServiceAccount acepta la credencial de Firebase de las dos formas en que
+se la puede tener a mano, y devuelve siempre el JSON.
+
+  - Empieza con "{"  → es el JSON inline. Es lo que hay en Fly, donde los
+    secretos son variables de entorno y no hay dónde poner un archivo.
+  - Cualquier otra cosa → es la ruta al archivo que baja la consola de Firebase.
+    Es lo que corresponde en local: ese JSON tiene saltos de línea, y pegarlo
+    dentro de un `.env` no rompe solo esa línea, rompe el archivo entero —
+    godotenv corta al primer renglón que no puede leer y descarta TODAS las
+    variables, así que el síntoma termina siendo "DATABASE_URL is required" y
+    nadie mira a Firebase.
+
+Una ruta que no se puede leer es un error y no un "Firebase apagado". Seguir en
+silencio es exactamente lo que hace que un secreto mal configurado se descubra
+tres pantallas después, cuando algo no anda y nada dice por qué.
+*/
+func resolveServiceAccount(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(value, "{") {
+		return value, nil
+	}
+
+	// El `~` lo expande el shell, y acá el valor puede venir de un `.env`, que
+	// no pasa por ningún shell.
+	if strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("FIREBASE_SERVICE_ACCOUNT: no se pudo resolver %q: %w", value, err)
+		}
+		value = filepath.Join(home, value[2:])
+	}
+
+	data, err := os.ReadFile(value)
+	if err != nil {
+		return "", fmt.Errorf(
+			"FIREBASE_SERVICE_ACCOUNT parece una ruta pero no se pudo leer (%s). "+
+				"Tiene que ser la ruta al JSON de la cuenta de servicio, o el JSON inline empezando con '{'", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
+		return "", fmt.Errorf("FIREBASE_SERVICE_ACCOUNT: %s no parece un JSON de cuenta de servicio", value)
+	}
+	return string(data), nil
 }
 
 // AllowOrigin decide si un Origin del navegador entra. Se pasa como

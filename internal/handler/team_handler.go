@@ -38,14 +38,18 @@ func (h *TeamHandler) Create(c *gin.Context) {
 	}
 
 	var req struct {
-		Name      string `json:"name"       binding:"required"`
-		SportID   string `json:"sport_id"   binding:"required"`
-		Category  string `json:"category"   binding:"required"`
-		ClubID    string `json:"club_id"`
-		LogoURL   string `json:"logo_url"`
-		FeeAmount int64  `json:"fee_amount"`
-		FeeDueDay int    `json:"fee_due_day" binding:"min=1,max=31"`
-		Currency  string `json:"currency"   binding:"required"`
+		Name     string `json:"name"       binding:"required"`
+		SportID  string `json:"sport_id"   binding:"required"`
+		Category string `json:"category"   binding:"required"`
+		// Opcionales: un equipo puede nacer sin ciudad ni descripción, y el alta
+		// no las pide como requisito para no alargar el primer paso.
+		City        string `json:"city"`
+		Description string `json:"description"`
+		ClubID      string `json:"club_id"`
+		LogoURL     string `json:"logo_url"`
+		FeeAmount   int64  `json:"fee_amount"`
+		FeeDueDay   int    `json:"fee_due_day" binding:"min=1,max=31"`
+		Currency    string `json:"currency"   binding:"required"`
 		// Puntero para distinguir "no lo mandó" de "dijo que no juega": un
 		// cliente viejo que omita el campo tiene que seguir creando un manager
 		// que no ocupa lugar en la plantilla.
@@ -57,15 +61,17 @@ func (h *TeamHandler) Create(c *gin.Context) {
 	}
 
 	t := &team.Team{
-		Name:      req.Name,
-		SportID:   req.SportID,
-		Category:  req.Category,
-		ClubID:    req.ClubID,
-		LogoURL:   req.LogoURL,
-		FeeAmount: req.FeeAmount,
-		FeeDueDay: req.FeeDueDay,
-		Currency:  req.Currency,
-		IsActive:  true,
+		Name:        req.Name,
+		SportID:     req.SportID,
+		Category:    req.Category,
+		City:        req.City,
+		Description: req.Description,
+		ClubID:      req.ClubID,
+		LogoURL:     req.LogoURL,
+		FeeAmount:   req.FeeAmount,
+		FeeDueDay:   req.FeeDueDay,
+		Currency:    req.Currency,
+		IsActive:    true,
 	}
 	if err := h.repo.Create(c.Request.Context(), t); err != nil {
 		if errors.Is(err, team.ErrNameTaken) {
@@ -160,7 +166,10 @@ func (h *TeamHandler) UpdateFeeConfig(c *gin.Context) {
 // cargó— y la app muestra el estado vacío en vez de un error.
 func (h *TeamHandler) GetBankAccount(c *gin.Context) {
 	teamID := c.Param("id")
-	if _, err := h.authz.requireMember(c, teamID); abortAuthz(c, err) {
+	// Incluye a los invitados: es la cuenta a la que hay que transferir, y el
+	// parche paga su cuota de cancha por la app como cualquiera. Esconderle los
+	// datos bancarios sería cobrarle sin decirle dónde pagar.
+	if _, err := h.authz.requireMembership(c, teamID); abortAuthz(c, err) {
 		return
 	}
 

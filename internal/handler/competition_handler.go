@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 )
 
@@ -18,12 +19,22 @@ const invitationTTL = 7 * 24 * time.Hour
 type CompetitionHandler struct {
 	competitions competition.Repository
 	authz        teamAuthorizer
+	access       competitionAccess
 }
 
-func NewCompetitionHandler(competitions competition.Repository, memberships membership.Repository) *CompetitionHandler {
+func NewCompetitionHandler(
+	competitions competition.Repository,
+	memberships membership.Repository,
+	matches match.Repository,
+) *CompetitionHandler {
+	authz := teamAuthorizer{memberships: memberships}
 	return &CompetitionHandler{
 		competitions: competitions,
-		authz:        teamAuthorizer{memberships: memberships},
+		authz:        authz,
+		// El repositorio de partidos entra solo por esto: la regla de acceso
+		// necesita saber si un invitado tiene convocatoria a alguno de los
+		// partidos de la competencia.
+		access: competitionAccess{authz: authz, competitions: competitions, matches: matches},
 	}
 }
 
@@ -46,14 +57,12 @@ func (h *CompetitionHandler) ListByTeam(c *gin.Context) {
 }
 
 // GetByID GET /competitions/:competitionId
+//
+// La lee quien la juega. Ver `competitionAccess`: antes no validaba nada y
+// alcanzaba con el UUID para leer la de cualquier club.
 func (h *CompetitionHandler) GetByID(c *gin.Context) {
-	comp, err := h.competitions.FindByID(c.Request.Context(), c.Param("competitionId"))
-	if errors.Is(err, competition.ErrNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "competition not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+	comp, ok := h.access.requireByID(c, c.Param("competitionId"))
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, comp)
@@ -128,6 +137,10 @@ func (h *CompetitionHandler) Create(c *gin.Context) {
 
 // ListEntries GET /competitions/:competitionId/entries
 func (h *CompetitionHandler) ListEntries(c *gin.Context) {
+	if _, ok := h.access.requireByID(c, c.Param("competitionId")); !ok {
+		return
+	}
+
 	entries, err := h.competitions.ListEntries(c.Request.Context(), c.Param("competitionId"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list entries"})

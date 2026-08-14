@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 	"github.com/mbalmaceda/sports-hub-backend/internal/db"
 )
 
@@ -117,7 +117,7 @@ func main() {
 	months := flag.Int("months", 3, "cantidad de meses de cuotas a generar (historial hacia atrás)")
 	flag.Parse()
 
-	_ = godotenv.Load()
+	config.LoadDotEnv()
 
 	// Este comando crea usuarios con una contraseña conocida y publicada en este
 	// mismo archivo. Corrido contra una base compartida, esas cuentas quedan a

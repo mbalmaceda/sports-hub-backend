@@ -21,6 +21,18 @@ func newRosterHandler(repo *testutil.MockMembershipRepo) *handler.RosterHandler 
 	return handler.NewRosterHandler(repo, nil)
 }
 
+// memberOf deja al usuario adentro del equipo, que es lo que el plantel exige
+// para dejarse leer.
+func memberOf(repo *testutil.MockMembershipRepo, teamID, userID string) {
+	repo.On("FindByUserAndTeam", mock.Anything, userID, teamID).Return(&membership.Membership{
+		ID:     "m-" + userID,
+		UserID: userID,
+		TeamID: teamID,
+		Role:   membership.RolePlayer,
+		Status: membership.StatusActive,
+	}, nil)
+}
+
 func TestListByTeam_Success(t *testing.T) {
 	repo := &testutil.MockMembershipRepo{}
 	h := newRosterHandler(repo)
@@ -29,11 +41,13 @@ func TestListByTeam_Success(t *testing.T) {
 		{MembershipID: "m-1", FullName: "Ana García", Role: membership.RolePlayer},
 		{MembershipID: "m-2", FullName: "Luis Pérez", Role: membership.RoleManager},
 	}
+	memberOf(repo, "team-1", "user-1")
 	repo.On("ListByTeam", mock.Anything, "team-1").Return(members, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "user-1")
 	c.Request = httptest.NewRequest(http.MethodGet, "/teams/team-1/roster", nil)
 
 	h.ListByTeam(c)
@@ -46,15 +60,64 @@ func TestListByTeam_Success(t *testing.T) {
 	assert.Equal(t, "Ana García", body[0]["full_name"])
 }
 
+// El plantel es de quien está adentro: con sesión pero sin membresía no se lee,
+// aunque se sepa el id del equipo.
+func TestListByTeam_RejectsNonMember(t *testing.T) {
+	repo := &testutil.MockMembershipRepo{}
+	h := newRosterHandler(repo)
+
+	repo.On("FindByUserAndTeam", mock.Anything, "forastero", "team-1").
+		Return(nil, membership.ErrNotFound)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "forastero")
+	c.Request = httptest.NewRequest(http.MethodGet, "/teams/team-1/roster", nil)
+
+	h.ListByTeam(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	repo.AssertNotCalled(t, "ListByTeam")
+}
+
+// Una membresía dada de baja no alcanza: la fila sigue existiendo, la persona
+// ya no está en el equipo.
+func TestListByTeam_RejectsInactiveMember(t *testing.T) {
+	repo := &testutil.MockMembershipRepo{}
+	h := newRosterHandler(repo)
+
+	repo.On("FindByUserAndTeam", mock.Anything, "ex-jugador", "team-1").Return(&membership.Membership{
+		ID:     "m-ex",
+		UserID: "ex-jugador",
+		TeamID: "team-1",
+		Role:   membership.RolePlayer,
+		Status: membership.StatusInactive,
+	}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "ex-jugador")
+	c.Request = httptest.NewRequest(http.MethodGet, "/teams/team-1/roster", nil)
+
+	h.ListByTeam(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	repo.AssertNotCalled(t, "ListByTeam")
+}
+
 func TestListByTeam_ReturnsEmptyArray(t *testing.T) {
 	repo := &testutil.MockMembershipRepo{}
 	h := newRosterHandler(repo)
 
+	memberOf(repo, "team-1", "user-1")
 	repo.On("ListByTeam", mock.Anything, "team-1").Return([]*membership.TeamMember{}, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "user-1")
 	c.Request = httptest.NewRequest(http.MethodGet, "/teams/team-1/roster", nil)
 
 	h.ListByTeam(c)
@@ -165,12 +228,14 @@ func TestGetMember_Success(t *testing.T) {
 	repo := &testutil.MockMembershipRepo{}
 	h := newRosterHandler(repo)
 
-	member := &membership.TeamMember{MembershipID: "m-1", FullName: "Carlos López"}
+	member := &membership.TeamMember{MembershipID: "m-1", TeamID: "team-1", FullName: "Carlos López"}
 	repo.On("GetMemberByID", mock.Anything, "m-1").Return(member, nil)
+	memberOf(repo, "team-1", "user-1")
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}, {Key: "membershipId", Value: "m-1"}}
+	withClaims(c, "user-1")
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
 	h.GetMember(c)
@@ -180,6 +245,34 @@ func TestGetMember_Success(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "Carlos López", body["full_name"])
+}
+
+// La ficha es la única que devuelve email y teléfono, así que es la que más
+// necesita que quien pregunta sea del equipo.
+func TestGetMember_RejectsNonMember(t *testing.T) {
+	repo := &testutil.MockMembershipRepo{}
+	h := newRosterHandler(repo)
+
+	member := &membership.TeamMember{
+		MembershipID: "m-1",
+		TeamID:       "team-1",
+		FullName:     "Carlos López",
+		Email:        "carlos@example.com",
+	}
+	repo.On("GetMemberByID", mock.Anything, "m-1").Return(member, nil)
+	repo.On("FindByUserAndTeam", mock.Anything, "forastero", "team-1").
+		Return(nil, membership.ErrNotFound)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "membershipId", Value: "m-1"}}
+	withClaims(c, "forastero")
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h.GetMember(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.NotContains(t, w.Body.String(), "carlos@example.com")
 }
 
 func TestGetMember_NotFound(t *testing.T) {

@@ -135,6 +135,11 @@ func (m *MockMembershipRepo) FindByUserAndTeam(ctx context.Context, userID, team
 	return args.Get(0).(*membership.Membership), args.Error(1)
 }
 
+func (m *MockMembershipRepo) PromoteGuest(ctx context.Context, id string) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
 func (m *MockMembershipRepo) ListByTeam(ctx context.Context, teamID string) ([]*membership.TeamMember, error) {
 	args := m.Called(ctx, teamID)
 	if args.Get(0) == nil {

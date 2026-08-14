@@ -107,6 +107,48 @@ func TestGenerateFees_OnlyForMembersWhoPlay(t *testing.T) {
 	assert.ElementsMatch(t, []string{"m-player", "m-playing-manager"}, ids)
 }
 
+// El invitado de un partido no paga la cuota del club. Juega y paga su cuota de
+// cancha, pero la mensualidad es de los socios: cobrársela a alguien que vino un
+// sábado es la forma más rápida de que desinstale la app.
+func TestGenerateFees_SkipsGuests(t *testing.T) {
+	feeRepo := &testutil.MockFeeRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	teamRepo := &testutil.MockTeamRepo{}
+	h := newFeeHandler(feeRepo, memberRepo, teamRepo)
+
+	teamID := "team-1"
+	t1 := &team.Team{ID: teamID, Name: "Deportivo Norte", FeeAmount: 10000, FeeDueDay: 5, Currency: "CLP"}
+	members := []*membership.TeamMember{
+		{MembershipID: "m-player", TeamID: teamID, Role: membership.RolePlayer, Status: "active", PlaysAsPlayer: true},
+		// El parche: activo y juega, pero no es del club.
+		{
+			MembershipID: "m-guest", TeamID: teamID, Role: membership.RolePlayer,
+			Kind: membership.KindGuest, Status: "active", PlaysAsPlayer: true,
+		},
+	}
+
+	teamRepo.On("FindByID", mock.Anything, teamID).Return(t1, nil)
+	memberRepo.On("ListByTeam", mock.Anything, teamID).Return(members, nil)
+
+	var captured []*fee.Obligation
+	feeRepo.On("BulkCreate", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			captured = args.Get(1).([]*fee.Obligation)
+		}).Return(1, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: teamID}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+teamID+"/generate-fees",
+		strings.NewReader(`{"period_year":2026,"period_month":7}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Generate(c)
+
+	require.Len(t, captured, 1)
+	assert.Equal(t, "m-player", captured[0].MembershipID)
+}
+
 func TestGenerateFees_SkipsInactiveMembers(t *testing.T) {
 	feeRepo := &testutil.MockFeeRepo{}
 	memberRepo := &testutil.MockMembershipRepo{}

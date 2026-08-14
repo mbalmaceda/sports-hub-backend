@@ -551,3 +551,102 @@ func TestListChargesByPeriod_NonMemberIsRejected(t *testing.T) {
 	d.charges.AssertNotCalled(t, "ListByTeamAndPeriod",
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
+
+// ─── Condonar ────────────────────────────────────────────────────────────────
+
+func TestWaiveCharge_ManagerClosesAPendingCharge(t *testing.T) {
+	h, d := newChargeHandler()
+
+	ch := &charge.Charge{ID: "ch-1", TeamID: homeTeam, MembershipID: "m-guest", Status: charge.StatusPending}
+	d.charges.On("FindByID", mock.Anything, "ch-1").Return(ch, nil)
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
+		Return(managerOf(homeTeam, "user-mgr"), nil)
+	d.charges.On("Waive", mock.Anything, "ch-1", "user-mgr").
+		Return(&charge.Charge{ID: "ch-1", TeamID: homeTeam, Status: charge.StatusWaived}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-mgr")
+	c.Params = gin.Params{{Key: "chargeId", Value: "ch-1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/charges/ch-1/waive", nil)
+
+	h.Waive(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	d.charges.AssertExpectations(t)
+}
+
+// Nadie se perdona su propia cuota: condonar es de quien maneja la plata.
+func TestWaiveCharge_RejectsTheDebtor(t *testing.T) {
+	h, d := newChargeHandler()
+
+	ch := &charge.Charge{ID: "ch-1", TeamID: homeTeam, MembershipID: "m-1", Status: charge.StatusPending}
+	d.charges.On("FindByID", mock.Anything, "ch-1").Return(ch, nil)
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-1", homeTeam).
+		Return(&membership.Membership{
+			ID: "m-1", UserID: "user-1", TeamID: homeTeam,
+			Role: membership.RolePlayer, Status: membership.StatusActive,
+		}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-1")
+	c.Params = gin.Params{{Key: "chargeId", Value: "ch-1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/charges/ch-1/waive", nil)
+
+	h.Waive(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	d.charges.AssertNotCalled(t, "Waive", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// Perdonar una deuda ya cobrada no la borra: la convierte en plata sin registro.
+func TestWaiveCharge_ConflictWhenAlreadyPaid(t *testing.T) {
+	h, d := newChargeHandler()
+
+	ch := &charge.Charge{ID: "ch-1", TeamID: homeTeam, MembershipID: "m-1", Status: charge.StatusPaid}
+	d.charges.On("FindByID", mock.Anything, "ch-1").Return(ch, nil)
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
+		Return(managerOf(homeTeam, "user-mgr"), nil)
+	d.charges.On("Waive", mock.Anything, "ch-1", "user-mgr").
+		Return(nil, charge.ErrAlreadySettled)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-mgr")
+	c.Params = gin.Params{{Key: "chargeId", Value: "ch-1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/charges/ch-1/waive", nil)
+
+	h.Waive(c)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
+// El invitado tiene que poder llegar a su propio cargo: paga la cancha por la
+// app como cualquiera. Lo que no puede es tocar el de otro.
+func TestSubmitReceipt_GuestCanPayTheirOwnCharge(t *testing.T) {
+	h, d := newChargeHandler()
+
+	ch := &charge.Charge{ID: "ch-1", TeamID: homeTeam, MembershipID: "m-guest", Status: charge.StatusPending}
+	d.charges.On("FindByID", mock.Anything, "ch-1").Return(ch, nil)
+	d.members.On("FindByUserAndTeam", mock.Anything, "parche", homeTeam).
+		Return(&membership.Membership{
+			ID: "m-guest", UserID: "parche", TeamID: homeTeam,
+			Role: membership.RolePlayer, Kind: membership.KindGuest,
+			Status: membership.StatusActive,
+		}, nil)
+	d.charges.On("SubmitReceipt", mock.Anything, "ch-1", "file://comprobante.jpg").
+		Return(&charge.Charge{ID: "ch-1", TeamID: homeTeam, Status: charge.StatusPaid}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "parche")
+	c.Params = gin.Params{{Key: "chargeId", Value: "ch-1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/charges/ch-1/receipt",
+		strings.NewReader(`{"receipt_url":"file://comprobante.jpg"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.SubmitReceipt(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}

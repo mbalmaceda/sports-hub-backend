@@ -12,6 +12,9 @@ var (
 	ErrNotPayable = errors.New("this charge is not awaiting payment")
 	// ErrNotSubmitted protege de confirmar un cargo del que nadie subió nada.
 	ErrNotSubmitted = errors.New("this charge has no receipt to review")
+	// ErrAlreadySettled frena condonar algo que ya se pagó. Perdonar una deuda
+	// cobrada no la borra, la convierte en plata sin registro.
+	ErrAlreadySettled = errors.New("this charge was already paid")
 )
 
 type SourceType string
@@ -228,4 +231,22 @@ type Repository interface {
 	Confirm(ctx context.Context, id, confirmedBy string, at time.Time) (*Charge, error)
 	// RejectReceipt devuelve el cargo a pendiente para que se vuelva a subir.
 	RejectReceipt(ctx context.Context, id string) (*Charge, error)
+	/*
+		Waive cierra el cargo sin que entre plata por la app: el clásico "me lo
+		pagó en efectivo" o "déjalo así".
+
+		Es lo que faltaba para poder cerrar un cobro incobrable. Sin esto, un
+		pendiente que nadie va a pagar se quedaba en la lista del manager para
+		siempre y ensuciaba el saldo del equipo. Con los invitados de un partido
+		deja de ser un caso raro: el que vino un sábado y no volvió no tiene
+		cuota mensual donde arrastrarle la deuda.
+
+		Solo sobre 'pending'. Un cargo pagado no se condona —esa plata entró y
+		borrarla del registro es peor que la deuda— y para eso está
+		ErrAlreadySettled.
+
+		Guarda quién lo condonó en confirmed_by: es una decisión de alguien, no
+		un vencimiento automático, y tiene que quedar con nombre.
+	*/
+	Waive(ctx context.Context, id, waivedBy string, at time.Time) (*Charge, error)
 }

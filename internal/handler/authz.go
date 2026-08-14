@@ -15,6 +15,10 @@ var (
 	ErrNoClaims     = errors.New("unauthorized")
 	ErrNotMember    = errors.New("you are not a member of this team")
 	ErrInsufficient = errors.New("your role does not allow this action")
+	// ErrGuestScope es el invitado de un partido pidiendo algo del equipo.
+	// Tiene membresía, pero su vínculo es con un partido y no con el club: no
+	// ve el plantel, ni las finanzas, ni los otros partidos.
+	ErrGuestScope = errors.New("your invitation only covers the match you were called up to")
 )
 
 // teamAuthorizer resuelve qué puede hacer el usuario del token dentro de un equipo.
@@ -27,9 +31,31 @@ type teamAuthorizer struct {
 	memberships membership.Repository
 }
 
-// requireMember exige pertenecer al equipo, con cualquier rol.
-// Devuelve la membresía para que el handler no tenga que volver a buscarla.
+// requireMember exige ser del equipo, con cualquier rol.
+//
+// Excluye a los invitados de un partido: tienen membresía para que la
+// convocatoria y el cobro funcionen, pero no son del club. Este es el guard por
+// defecto y el que hay que usar salvo que el endpoint sea justamente uno de los
+// que un invitado tiene que poder tocar —su partido, su cargo—, y en ese caso
+// va `requireMembership` y quien la llama acota el alcance.
 func (a teamAuthorizer) requireMember(c *gin.Context, teamID string) (*membership.Membership, error) {
+	m, err := a.requireMembership(c, teamID)
+	if err != nil {
+		return nil, err
+	}
+	if m.IsGuest() {
+		return nil, ErrGuestScope
+	}
+	return m, nil
+}
+
+// requireMembership exige tener membresía activa en el equipo, contando a los
+// invitados. Devuelve la membresía para que el handler no tenga que volver a
+// buscarla.
+//
+// Quien la usa se hace cargo de acotar al invitado: un invitado no tiene
+// equipo, tiene un partido, y esta función sola no sabe cuál.
+func (a teamAuthorizer) requireMembership(c *gin.Context, teamID string) (*membership.Membership, error) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
 		return nil, ErrNoClaims
@@ -81,6 +107,8 @@ func abortAuthz(c *gin.Context, err error) bool {
 		c.AbortWithStatusJSON(403, gin.H{"error": ErrNotMember.Error()})
 	case errors.Is(err, ErrInsufficient):
 		c.AbortWithStatusJSON(403, gin.H{"error": ErrInsufficient.Error()})
+	case errors.Is(err, ErrGuestScope):
+		c.AbortWithStatusJSON(403, gin.H{"error": ErrGuestScope.Error()})
 	default:
 		c.AbortWithStatusJSON(500, gin.H{"error": "internal error"})
 	}

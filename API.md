@@ -181,6 +181,8 @@ Lista todos los equipos activos.
     "name": "Deportivo Norte",
     "sport_id": "football",
     "category": "Senior",
+    "city": "Santiago",
+    "description": "Entrenamos los jueves en Ñuñoa.",
     "club_id": "",
     "logo_url": "",
     "fee_amount": 10000,
@@ -201,6 +203,8 @@ Lista todos los equipos activos.
   "name": "Deportivo Norte",
   "sport_id": "football",
   "category": "Senior",
+  "city": "Santiago",
+  "description": "Entrenamos los jueves en Ñuñoa.",
   "club_id": "",
   "logo_url": "",
   "fee_amount": 10000,
@@ -208,6 +212,9 @@ Lista todos los equipos activos.
   "currency": "CLP"
 }
 ```
+
+`name`, `sport_id`, `category` y `currency` son obligatorios; `city` y `description`
+son opcionales y viajan vacías si el alta no las pidió.
 
 **Response 201** — objeto Team  
 **Response 409** `{ "error": "team name already taken" }` — el nombre ya existe (sin distinguir mayúsculas)
@@ -235,6 +242,13 @@ Lista todos los equipos activos.
 ### GET `/teams/:id/roster`
 Lista todos los miembros del equipo. Combina datos de `memberships` + `users`.
 
+Hay que **pertenecer al equipo** para leerlo, con cualquier rol: tener sesión no
+alcanza. Una membresía dada de baja tampoco.
+
+El listado **no trae `email` ni `phone`**. El contacto se pide de a uno, en
+`GET /memberships/:membershipId`: mandarlo acá entregaba la agenda completa del
+club en un solo request, y ninguna pantalla lo usa desde la lista.
+
 **Response 200**
 ```json
 [
@@ -244,9 +258,8 @@ Lista todos los miembros del equipo. Combina datos de `memberships` + `users`.
     "team_id": "uuid",
     "full_name": "Mirko Balmaceda",
     "avatar_url": "",
-    "email": "mirko@example.com",
-    "phone": "",
     "role": "player",
+    "plays_as_player": true,
     "jersey_number": 10,
     "position": "Delantero",
     "status": "active",
@@ -254,6 +267,8 @@ Lista todos los miembros del equipo. Combina datos de `memberships` + `users`.
   }
 ]
 ```
+
+**Response 403** `{ "error": "you are not a member of this team" }`
 
 ---
 
@@ -275,7 +290,13 @@ Agrega un usuario existente al equipo.
 ---
 
 ### GET `/teams/:id/roster/:membershipId`
+Alias de `GET /memberships/:membershipId`.
+
+Ficha completa del jugador, y la **única** que devuelve `email` y `phone`. Exige
+pertenecer al equipo de esa membresía, con cualquier rol.
+
 **Response 200** — objeto TeamMember  
+**Response 403** `{ "error": "you are not a member of this team" }`  
 **Response 404** `{ "error": "member not found" }`
 
 ---
@@ -301,9 +322,11 @@ Valores válidos: `active` | `inactive` | `suspended`
 | `name` | string | |
 | `sport_id` | string | ej. `"football"`, `"basketball"` |
 | `category` | string | ej. `"Senior"`, `"U18"` |
+| `city` | string | texto libre, puede venir vacío |
+| `description` | string | presentación breve, hasta 160 caracteres; puede venir vacía |
 | `club_id` | string | opcional |
 | `logo_url` | string | opcional |
-| `fee_amount` | number | en centavos |
+| `fee_amount` | number | entero en **unidades menores** según el exponente ISO 4217 — CLP tiene exponente 0, así que `28000` es $28.000 |
 | `fee_due_day` | number | 1–31 |
 | `currency` | string | ej. `"CLP"`, `"USD"` |
 | `is_active` | boolean | |
@@ -315,13 +338,15 @@ Valores válidos: `active` | `inactive` | `suspended`
 | `user_id` | string (UUID) | |
 | `team_id` | string (UUID) | |
 | `full_name` | string | |
-| `email` | string | |
-| `role` | string | `player` \| `coach` \| `admin` |
+| `email` | string | **solo en la ficha individual**, no en el listado del plantel |
+| `role` | string | `player` \| `treasurer` \| `manager` |
+| `kind` | string | `member` \| `guest`; el invitado de un partido no es del club |
+| `plays_as_player` | boolean | si ocupa un lugar en el plantel; independiente del rol |
 | `status` | string | `active` \| `inactive` \| `suspended` |
 | `jersey_number` | number | opcional |
 | `position` | string | opcional |
 | `avatar_url` | string | opcional |
-| `phone` | string | opcional |
+| `phone` | string | opcional, **solo en la ficha individual** |
 | `joined_at` | string (ISO 8601) | |
 
 ---
@@ -492,6 +517,26 @@ familia de amistosos (`/teams/:id/friendlies`, `/friendlies/:challengeId` con
 
 Toda competencia trae `is_internal`. Es `false` salvo en los partidos internos.
 
+### Quién puede leer qué
+
+Tener sesión **no alcanza** para nada de esto. La regla es "quién lo juega":
+
+| Endpoint | Lo lee |
+|---|---|
+| `GET /competitions/:competitionId` · `/entries` · `/matches` | el plantel de algún equipo que la juega (organizador o con entrada), o el invitado con convocatoria a uno de sus partidos |
+| `GET /matches/:matchId` · `/callups` | el plantel de cualquiera de los dos equipos, o el invitado citado a **ese** partido |
+
+Los tres primeros no validaban nada hasta la 002: alcanzaba con el UUID para leer
+la competencia de cualquier club, con su fecha, su cancha y cuánto cuesta.
+
+El invitado entra por su convocatoria y no por su membresía, y eso es lo que lo
+acota: necesita leer la competencia porque de ahí sale su cuota por jugador, pero
+una membresía de invitado por sí sola no abre ninguna otra. La regla vive en un
+solo lugar, `internal/handler/competition_access.go`.
+
+**Response 403** `{ "error": "you are not a member of this team" }` |
+`{ "error": "your invitation only covers the match you were called up to" }`
+
 ### POST `/teams/:id/internal-matches`
 Partido interno: el equipo pone la gente de los dos lados. Requiere rol `manager`.
 
@@ -594,6 +639,210 @@ jugadores pagaron por esa misma cancha.
 **Response 200** — array de Charge  
 **Response 400** `{ "error": "invalid month" }`  
 **Response 403** — no sos miembro del equipo
+
+---
+
+### POST `/charges/:chargeId/waive`
+Condona el cobro: lo cierra sin que entre plata por la app. Es el "me lo pagó en
+efectivo" y el "déjalo así, no lo vamos a ver".
+
+Lo hace **manager o tesorero**, nunca el deudor —si no, cualquiera se perdona su
+propia cuota— y solo sobre un cobro `pending`. Uno ya pagado no se condona: esa
+plata entró, y borrarla del registro es peor que la deuda.
+
+Es la única salida que tiene un pendiente incobrable. Con los invitados de un
+partido deja de ser un caso raro: al que vino un sábado y no volvió no hay cuota
+mensual donde arrastrarle la deuda.
+
+**Response 200** — objeto Charge en `waived`  
+**Response 403** `{ "error": "your role does not allow this action" }`  
+**Response 409** `{ "error": "this charge was already paid" }`
+
+---
+
+## Invitados de un partido ("parches")
+
+Gente que no es del equipo y viene a completar una convocatoria. El manager
+genera un enlace, lo comparte por WhatsApp, y quien lo abre crea su cuenta (el
+`POST /auth/register` de siempre) y canjea.
+
+El invitado queda como una **membresía con `kind: "guest"`**: la convocatoria, el
+cobro de la cancha y el historial cuelgan de `membership_id`, así que modelarlo
+aparte obligaba a duplicar el flujo de cobros entero. Lo que lo distingue del
+plantel:
+
+| | Plantel | Invitado |
+|---|---|---|
+| Cuota mensual del club | sí | **no** |
+| Cuota de cancha del partido | sí | **sí**, la misma |
+| Ve el plantel / las finanzas | sí | **no** |
+| Ve partidos del equipo | todos | **solo al que fue convocado** |
+
+Ese último corte es lo que hace `requireMember` (excluye invitados) contra
+`requireMembership` (los incluye, y quien la usa los acota al partido). En
+Firestore lo repiten las reglas con `kind` y `matchId` del espejo.
+
+---
+
+### POST `/matches/:matchId/guest-invites` 🔒
+Genera el enlace. Solo el **manager** de uno de los equipos que juega: sumar
+gente al partido es convocar.
+
+`max_uses` lo manda el cliente porque es él quien sabe cuántos faltan, pero el
+servidor lo acota a **11**. El vencimiento no se negocia: es la hora del partido.
+Las dos cosas juntas son lo que evita el enlace huérfano circulando en un grupo
+de WhatsApp tres meses después.
+
+**Body**
+```json
+{ "team_id": "uuid", "max_uses": 3 }
+```
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "token": "aX9...",
+  "url": "https://sports-hub-backend.fly.dev/i/aX9...",
+  "match_id": "uuid",
+  "team_id": "uuid",
+  "max_uses": 3,
+  "used_count": 0,
+  "expires_at": "2026-08-16T23:00:00Z"
+}
+```
+
+⚠️ El `token` se ve **una sola vez**, acá. En la base solo vive su SHA-256. Si se
+pierde, se genera otro enlace.
+
+`url` es el enlace listo para compartir y lo arma el servidor, no el cliente: es
+el único que sabe con qué dominio se sirven las invitaciones (`PUBLIC_BASE_URL`).
+Llega **vacío** si esa variable no está configurada, y en ese caso el cliente no
+tiene que compartir nada — mandar un enlace roto por WhatsApp se paga con la
+persona que lo recibió.
+
+**Response 400** `{ "error": "max_uses is too high" }`  
+**Response 403** — no sos manager de ese equipo  
+**Response 409** `{ "error": "this match already started" }`
+
+---
+
+### GET `/invites/:token` — **público, sin sesión**
+La pantalla que ve quien recibe el enlace y todavía no tiene cuenta. Por eso no
+pide token de sesión.
+
+Devuelve lo mínimo: equipo, cuándo, dónde, quién invita, cuánto sale y cuántos
+lugares quedan. **Nada de plantel, finanzas ni datos de contacto de nadie**: es
+una URL que cualquiera con el token puede abrir, así que lo que sale por acá se
+considera publicado.
+
+El costo va sí o sí. El parche que se entera en la cancha de que debe la cuota
+es una pelea, y el que queda mal es el que lo invitó.
+
+Limitado a 60 req/min por IP: es el único GET anónimo de la app.
+
+**Response 200**
+```json
+{
+  "team_name": "Deportivo Norte",
+  "invited_by": "Mirko",
+  "scheduled_at": "2026-08-16T23:00:00Z",
+  "venue": "Cancha La Reina",
+  "is_internal": false,
+  "opponent_name": "Stars FC",
+  "cost_per_player": 2000,
+  "currency": "CLP",
+  "remaining_uses": 2,
+  "expires_at": "2026-08-16T23:00:00Z"
+}
+```
+
+**Response 404** — el token no existe  
+**Response 410** `{ "error": "this invitation link is no longer valid" }` — vencido,
+revocado o sin cupo. Los tres devuelven lo mismo a propósito: al que llegó tarde
+hay que decirle que llegó tarde, y a quien esté probando tokens no hay que
+contarle más.
+
+---
+
+### POST `/invites/:token/accept` 🔒
+Canjea el enlace con la cuenta de quien lo abre. Registrarse es un paso aparte
+(`POST /auth/register`): un segundo camino de alta de usuarios traería su propia
+validación, su propio rate limit y su propia forma de romperse.
+
+En una transacción: descuenta el cupo, crea la membresía `guest` y deja la
+convocatoria en `confirmed` —el que canjea ya dijo que va—. Después emite el
+cargo de la cancha, la misma cuota que paga el resto.
+
+**Response 200**
+```json
+{ "membership_id": "uuid", "team_id": "uuid", "match_id": "uuid" }
+```
+
+**Response 409** `{ "error": "you already belong to this team" }` — el del plantel
+que abre el enlace del grupo. No gasta un lugar de nadie.  
+**Response 410** — el enlace ya no sirve
+
+---
+
+### GET `/matches/:matchId/guest-invites` 🔒
+Los enlaces de un partido, para que el manager vea cuántos lugares repartió
+antes de generar otro. Sin el token: ese ya no existe en claro.
+
+**Response 200** — array de `{ id, team_id, max_uses, used_count, remaining_uses, usable, expires_at, created_at }`
+
+---
+
+### DELETE `/guest-invites/:inviteId` 🔒
+Apaga el enlace antes de tiempo —se mandó al grupo equivocado—. No saca a nadie
+que ya haya entrado: esa gente está convocada y probablemente ya pagó.
+
+**Response 200** `{ "status": "revoked" }`
+
+---
+
+### POST `/teams/:id/roster/:membershipId/promote` 🔒
+Suma al plantel a un invitado que ya jugó: deja de ser `kind: "guest"`.
+
+Lo hace el **manager**, y es un acto explícito y no algo que pase solo después de
+N partidos, porque cambia dos cosas de fondo para esa persona: empieza a ver el
+equipo entero y empieza a deberle la cuota mensual.
+
+**Response 200** — objeto TeamMember, ya con `kind: "member"`  
+**Response 403** — no sos manager de ese equipo  
+**Response 404** — la membresía no existe o es de otro equipo  
+**Response 409** `{ "error": "this member already belongs to the squad" }`
+
+---
+
+## Páginas públicas de enlaces — **sin sesión**
+
+Las sirve el propio backend porque el destinatario de un enlace de invitación es,
+por definición, alguien que todavía no tiene la app: un `zports://` en WhatsApp
+no le abre nada y ni siquiera es tocable, así que el enlace tiene que ser
+`https://` y algo tiene que responderlo. Ver `internal/handler/applinks_handler.go`
+y la sección "Enlaces de invitación" de `DEPLOY.md`.
+
+### GET `/i/:token`
+HTML, no JSON. La página que abre quien recibe el enlace: dice a qué lo invitan y
+ofrece descargar la app. Sin JavaScript, porque se abre dentro del navegador de
+WhatsApp con la red que haya.
+
+Con la app instalada y los App Links verificados, el sistema operativo intercepta
+antes y abre la app directo — esta página es lo que ve quien **no** la tiene.
+
+**200** invitación vigente · **404** no existe · **410** vencida, revocada o llena
+
+### GET `/.well-known/assetlinks.json`
+Lo que hace que Android abra la app en vez del navegador. Sale de
+`ANDROID_CERT_FINGERPRINTS`.
+
+**404** si no está configurado, a propósito: un array vacío le diría a Android
+"acá no hay ninguna app asociada" y se queda cacheado así.
+
+### GET `/.well-known/apple-app-site-association`
+El equivalente de iOS, desde `APPLE_APP_ID` (`<TeamID>.<BundleID>`). **404**
+mientras no exista la cuenta de Apple Developer.
 
 ---
 

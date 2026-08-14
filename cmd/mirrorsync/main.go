@@ -19,14 +19,13 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 )
 
 func main() {
-	_ = godotenv.Load()
+	config.LoadDotEnv()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -54,7 +53,18 @@ func main() {
 	}
 	defer pool.Close()
 
-	rows, err := pool.Query(ctx, `SELECT team_id, user_id, role, status FROM memberships`)
+	// El match_id del invitado sale de su convocatoria, que es lo que lo ata a
+	// un partido. Si tuviera más de una —hoy no pasa, el canje crea una sola—
+	// gana la última: es la que corresponde al enlace más reciente.
+	rows, err := pool.Query(ctx, `
+		SELECT m.team_id, m.user_id, m.role, m.status, m.kind,
+		       COALESCE((
+		           SELECT cu.match_id::text FROM match_callups cu
+		           WHERE cu.membership_id = m.id
+		           ORDER BY cu.called_at DESC
+		           LIMIT 1
+		       ), '')
+		FROM memberships m`)
 	if err != nil {
 		slog.Error("query error", "error", err)
 		os.Exit(1)
@@ -64,9 +74,14 @@ func main() {
 	var memberships []firebase.Membership
 	for rows.Next() {
 		var m firebase.Membership
-		if err := rows.Scan(&m.TeamID, &m.UserID, &m.Role, &m.Status); err != nil {
+		var matchID string
+		if err := rows.Scan(&m.TeamID, &m.UserID, &m.Role, &m.Status, &m.Kind, &matchID); err != nil {
 			slog.Error("scan error", "error", err)
 			os.Exit(1)
+		}
+		// Solo el invitado queda acotado a un partido; el plantel los ve todos.
+		if m.Kind == "guest" {
+			m.MatchID = matchID
 		}
 		memberships = append(memberships, m)
 	}

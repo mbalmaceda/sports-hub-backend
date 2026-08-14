@@ -25,6 +25,7 @@ type MatchHandler struct {
 	notifications *notification.Service
 	firebase      *firebase.Firebase
 	authz         teamAuthorizer
+	access        competitionAccess
 }
 
 func NewMatchHandler(
@@ -43,6 +44,11 @@ func NewMatchHandler(
 		notifications: notifications,
 		firebase:      fb,
 		authz:         teamAuthorizer{memberships: memberships},
+		access: competitionAccess{
+			authz:        teamAuthorizer{memberships: memberships},
+			competitions: competitions,
+			matches:      matches,
+		},
 	}
 }
 
@@ -65,7 +71,14 @@ func (h *MatchHandler) ListByTeam(c *gin.Context) {
 }
 
 // ListByCompetition GET /competitions/:competitionId/matches
+//
+// Mismo alcance que la competencia: la lee quien la juega. Ver
+// `competitionAccess`.
 func (h *MatchHandler) ListByCompetition(c *gin.Context) {
+	if _, ok := h.access.requireByID(c, c.Param("competitionId")); !ok {
+		return
+	}
+
 	items, err := h.matches.ListByCompetition(c.Request.Context(), c.Param("competitionId"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list matches"})
@@ -78,14 +91,13 @@ func (h *MatchHandler) ListByCompetition(c *gin.Context) {
 }
 
 // GetByID GET /matches/:matchId
+//
+// Lo lee quien juega el partido: el plantel de cualquiera de los dos equipos, o
+// el invitado citado a este. Sin esta guarda alcanzaba con tener sesión y el id
+// del partido para leer el de cualquier club —cuándo, dónde y contra quién.
 func (h *MatchHandler) GetByID(c *gin.Context) {
-	m, err := h.matches.FindByID(c.Request.Context(), c.Param("matchId"))
-	if errors.Is(err, match.ErrNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "match not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+	m, ok := h.loadMatchForMember(c)
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, m)
@@ -204,9 +216,14 @@ func (h *MatchHandler) CallUp(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not verify roster"})
 		return
 	}
+	// Los invitados quedan afuera de la citación normal a propósito: su vínculo
+	// se apaga con el partido por el que entraron. Volver a llamar a un parche
+	// del mes pasado le devolvería acceso a un partido nuevo sin que él haya
+	// aceptado nada, así que para eso va un enlace nuevo —que es un acto
+	// explícito del manager y una decisión explícita de la persona.
 	own := make(map[string]bool, len(members))
 	for _, member := range members {
-		if member.Status == membership.StatusActive {
+		if member.Status == membership.StatusActive && !member.IsGuest() {
 			own[member.MembershipID] = true
 		}
 	}
@@ -283,7 +300,10 @@ func (h *MatchHandler) RespondToCallup(c *gin.Context) {
 	// La membresía se resuelve desde el token: un jugador responde por sí mismo
 	// y por nadie más. Aceptar un membershipId del body dejaría que cualquiera
 	// confirme o rechace en nombre de un compañero.
-	me, err := h.authz.requireMember(c, req.TeamID)
+	//
+	// El invitado también responde acá —puede avisar que al final no llega— y
+	// por eso pasa por el guard del partido y no por el del equipo.
+	me, err := h.requireMatchParticipant(c, req.TeamID, m)
 	if abortAuthz(c, err) {
 		return
 	}
@@ -334,7 +354,23 @@ func (h *MatchHandler) syncMatchCharge(
 		return
 	}
 
-	comp, err := h.competitions.FindByID(ctx, m.CompetitionID)
+	ensureMatchCharge(ctx, h.charges, h.competitions, m, teamID, membershipID)
+}
+
+// ensureMatchCharge deja creado el cargo de la cancha de quien va a jugar.
+//
+// Vive suelta y no como método porque hay dos puertas por las que alguien queda
+// confirmado a un partido —responder la citación y canjear un enlace de
+// invitado— y las dos tienen que cobrar igual. Duplicarla era dejar al parche
+// jugando gratis hasta que el manager se acordara de rehacer el reparto.
+func ensureMatchCharge(
+	ctx context.Context,
+	charges charge.Repository,
+	competitions competition.Repository,
+	m *match.Match,
+	teamID, membershipID string,
+) {
+	comp, err := competitions.FindByID(ctx, m.CompetitionID)
 	if err != nil {
 		slog.Error("could not read the competition to charge the venue",
 			"error", err, "competition_id", m.CompetitionID)
@@ -347,10 +383,10 @@ func (h *MatchHandler) syncMatchCharge(
 		return
 	}
 
-	if _, err := h.charges.EnsureForMembership(ctx, charge.EnsureInput{
+	if _, err := charges.EnsureForMembership(ctx, charge.EnsureInput{
 		TeamID:       teamID,
 		MembershipID: membershipID,
-		Source:       source,
+		Source:       charge.Source{Type: charge.SourceMatchCost, ID: m.CompetitionID},
 		Amount:       *comp.PlayerShare,
 		Currency:     comp.VenueCost.Currency,
 	}); err != nil {
@@ -359,8 +395,8 @@ func (h *MatchHandler) syncMatchCharge(
 	}
 }
 
-// loadMatchForMember carga el partido y exige pertenecer a alguno de los dos
-// equipos que juegan.
+// loadMatchForMember carga el partido y exige poder verlo: estar en el plantel
+// de alguno de los dos equipos, o ser el invitado convocado a ESTE partido.
 func (h *MatchHandler) loadMatchForMember(c *gin.Context) (*match.Match, bool) {
 	m, err := h.matches.FindByID(c.Request.Context(), c.Param("matchId"))
 	if errors.Is(err, match.ErrNotFound) {
@@ -373,11 +409,46 @@ func (h *MatchHandler) loadMatchForMember(c *gin.Context) (*match.Match, bool) {
 	}
 
 	for _, teamID := range []string{m.HomeTeamID, m.AwayTeamID} {
-		if _, err := h.authz.requireMember(c, teamID); err == nil {
+		if _, err := h.requireMatchParticipant(c, teamID, m); err == nil {
 			return m, true
 		}
 	}
 
 	c.JSON(http.StatusForbidden, gin.H{"error": ErrNotMember.Error()})
 	return nil, false
+}
+
+/*
+requireMatchParticipant resuelve quién pide, contra un partido concreto.
+
+Del plantel entra cualquiera del equipo. El invitado entra solo si tiene
+convocatoria a este partido, y ahí está toda la regla del "parche": su vínculo
+es con el partido y no con el club, así que su llave es la fila de
+match_callups, no la membresía.
+
+Sin este corte, la membresía de invitado sería una membresía normal y el que
+entró por un enlace de WhatsApp a jugar un sábado pasaría a ver el calendario
+entero del equipo.
+*/
+func (h *MatchHandler) requireMatchParticipant(
+	c *gin.Context, teamID string, m *match.Match,
+) (*membership.Membership, error) {
+	me, err := h.authz.requireMembership(c, teamID)
+	if err != nil {
+		return nil, err
+	}
+	if !me.IsGuest() {
+		return me, nil
+	}
+
+	callups, err := h.matches.ListCallups(c.Request.Context(), m.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, cu := range callups {
+		if cu.MembershipID == me.ID {
+			return me, nil
+		}
+	}
+	return nil, ErrGuestScope
 }

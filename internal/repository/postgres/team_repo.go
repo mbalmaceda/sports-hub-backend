@@ -21,13 +21,13 @@ func NewTeamRepository(pool *pgxpool.Pool) *TeamRepository {
 }
 
 const teamColumns = `
-	id, name, sport_id, COALESCE(club_id,''), category,
+	id, name, sport_id, COALESCE(club_id,''), category, city, description,
 	COALESCE(logo_url,''), fee_amount, fee_due_day, currency, is_active, created_at`
 
 func scanTeam(row pgx.Row) (*team.Team, error) {
 	t := &team.Team{}
 	err := row.Scan(
-		&t.ID, &t.Name, &t.SportID, &t.ClubID, &t.Category,
+		&t.ID, &t.Name, &t.SportID, &t.ClubID, &t.Category, &t.City, &t.Description,
 		&t.LogoURL, &t.FeeAmount, &t.FeeDueDay, &t.Currency, &t.IsActive, &t.CreatedAt,
 	)
 	return t, err
@@ -54,11 +54,11 @@ func isNameTakenConflict(err error) bool {
 
 func (r *TeamRepository) Create(ctx context.Context, t *team.Team) error {
 	const q = `
-		INSERT INTO teams (name, sport_id, club_id, category, logo_url, fee_amount, fee_due_day, currency, is_active)
-		VALUES ($1, $2, NULLIF($3,''), $4, NULLIF($5,''), $6, $7, $8, $9)
+		INSERT INTO teams (name, sport_id, club_id, category, city, description, logo_url, fee_amount, fee_due_day, currency, is_active)
+		VALUES ($1, $2, NULLIF($3,''), $4, $5, $6, NULLIF($7,''), $8, $9, $10, $11)
 		RETURNING id, created_at`
 	err := r.pool.QueryRow(ctx, q,
-		t.Name, t.SportID, t.ClubID, t.Category, t.LogoURL,
+		t.Name, t.SportID, t.ClubID, t.Category, t.City, t.Description, t.LogoURL,
 		t.FeeAmount, t.FeeDueDay, t.Currency, t.IsActive,
 	).Scan(&t.ID, &t.CreatedAt)
 	if isNameTakenConflict(err) {

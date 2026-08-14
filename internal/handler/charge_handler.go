@@ -108,8 +108,9 @@ func (h *ChargeHandler) ListByMembership(c *gin.Context) {
 	}
 
 	// La deuda de otro es información sensible: la ve quien maneja la plata del
-	// equipo, o el propio interesado.
-	me, err := h.authz.requireMember(c, target.TeamID)
+	// equipo, o el propio interesado. Los invitados entran por lo segundo —el
+	// chequeo de abajo los deja solo con lo suyo, porque no tienen rol.
+	me, err := h.authz.requireMembership(c, target.TeamID)
 	if abortAuthz(c, err) {
 		return
 	}
@@ -419,6 +420,42 @@ func (h *ChargeHandler) RejectReceipt(c *gin.Context) {
 	c.JSON(http.StatusOK, updated)
 }
 
+// Waive POST /charges/:chargeId/waive
+//
+// Cierra el cobro sin plata por la app: se pagó en efectivo, o el equipo decide
+// no perseguirlo más. Lo hace quien maneja la plata, nunca el deudor —si no,
+// cualquiera se perdona su propia cuota.
+//
+// Es la única salida que tiene un pendiente incobrable. Con los invitados de un
+// partido deja de ser un caso raro: al que vino un sábado y no volvió no hay
+// cuota mensual donde arrastrarle la deuda, y sin esto se quedaba en la lista
+// del manager para siempre.
+func (h *ChargeHandler) Waive(c *gin.Context) {
+	ch, me, ok := h.loadCharge(c)
+	if !ok {
+		return
+	}
+	if me.Role != membership.RoleManager && me.Role != membership.RoleTreasurer {
+		c.JSON(http.StatusForbidden, gin.H{"error": ErrInsufficient.Error()})
+		return
+	}
+
+	updated, err := h.charges.Waive(c.Request.Context(), ch.ID, me.UserID, time.Now())
+	if errors.Is(err, charge.ErrAlreadySettled) {
+		c.JSON(http.StatusConflict, gin.H{"error": charge.ErrAlreadySettled.Error()})
+		return
+	}
+	if errors.Is(err, charge.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": charge.ErrNotFound.Error()})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not waive the charge"})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
 // loadCharge trae el cargo y la membresía de quien pide, ya validada contra el
 // equipo dueño del cargo.
 func (h *ChargeHandler) loadCharge(c *gin.Context) (*charge.Charge, *membership.Membership, bool) {
@@ -432,7 +469,12 @@ func (h *ChargeHandler) loadCharge(c *gin.Context) (*charge.Charge, *membership.
 		return nil, nil, false
 	}
 
-	me, err := h.authz.requireMember(c, ch.TeamID)
+	// Incluye a los invitados: el parche paga su cuota de cancha por la app
+	// como cualquiera, así que tiene que poder llegar a su propio cargo. Quién
+	// puede hacer qué con él lo deciden los handlers —SubmitReceipt exige que
+	// el cargo sea suyo, y confirmar o condonar exige rol, que un invitado no
+	// tiene— así que este guard no necesita saber de partidos.
+	me, err := h.authz.requireMembership(c, ch.TeamID)
 	if abortAuthz(c, err) {
 		return nil, nil, false
 	}

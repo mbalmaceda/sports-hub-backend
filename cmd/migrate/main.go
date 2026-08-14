@@ -9,13 +9,14 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/joho/godotenv"
+
+	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 
 	sportsmigrations "github.com/mbalmaceda/sports-hub-backend/migrations"
 )
 
 func main() {
-	_ = godotenv.Load() // carga .env en desarrollo, ignorado en prod
+	config.LoadDotEnv()
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {

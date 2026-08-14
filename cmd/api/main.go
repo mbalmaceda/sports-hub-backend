@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/auth"
 	"github.com/mbalmaceda/sports-hub-backend/internal/config"
@@ -28,7 +27,7 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	_ = godotenv.Load()
+	config.LoadDotEnv()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -63,6 +62,7 @@ func main() {
 	fundsRepo := postgres.NewFundsRepository(pool)
 	expenseRepo := postgres.NewExpenseRepository(pool)
 	onboardingRepo := postgres.NewOnboardingRepository(pool)
+	guestInviteRepo := postgres.NewGuestInviteRepository(pool)
 
 	// Notifier. Los tokens de push viven en la tabla de usuarios, así que el
 	// repositorio de usuarios es el que sabe a qué dispositivos escribir.
@@ -94,9 +94,14 @@ func main() {
 	// La búsqueda de personas es por RUT: iterarla devuelve nombres, así que es
 	// una superficie de enumeración de datos personales y no solo un buscador.
 	lookupByUser := middleware.New(30, time.Minute)
+	// La vista previa de una invitación es el único GET público de la app: se
+	// entra con un token en la URL y sin sesión. Adivinar uno es imposible
+	// (256 bits), pero sin límite queda un endpoint anónimo golpeable de a
+	// millones, y cada intento pega en la base.
+	inviteByIP := middleware.New(60, time.Minute)
 	defer func() {
 		for _, l := range []*middleware.Limiter{
-			loginByIP, loginByAccount, registerByIP, refreshByIP, lookupByUser,
+			loginByIP, loginByAccount, registerByIP, refreshByIP, lookupByUser, inviteByIP,
 		} {
 			l.Stop()
 		}
@@ -110,12 +115,15 @@ func main() {
 	rosterHandler := handler.NewRosterHandler(rosterRepo, firebaseAuth)
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
-	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo)
+	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo, matchRepo)
 	friendlyHandler := handler.NewFriendlyHandler(friendlyRepo, competitionRepo, matchRepo, rosterRepo)
 	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, competitionRepo, chargeRepo, notifications, firebaseAuth)
 	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo, notifications)
 	expenseHandler := handler.NewExpenseHandler(expenseRepo, competitionRepo, rosterRepo)
 	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo, notifications, firebaseAuth)
+	guestHandler := handler.NewGuestHandler(
+		guestInviteRepo, matchRepo, rosterRepo, competitionRepo, chargeRepo, teamRepo, userRepo, firebaseAuth, cfg)
+	appLinksHandler := handler.NewAppLinksHandler(guestInviteRepo, cfg)
 
 	// Router
 	r := gin.New()
@@ -165,6 +173,20 @@ func main() {
 	r.POST("/auth/refresh", refreshByIP.ByIP(), authHandler.Refresh)
 	r.POST("/auth/logout", authHandler.Logout)
 
+	// Vista previa de una invitación a un partido. Va afuera del grupo
+	// protegido a propósito: el destinatario todavía no tiene cuenta, y pedirle
+	// sesión para ver a qué lo invitan sería pedirle que se registre a ciegas.
+	// Lo que devuelve está recortado para que sea seguro publicarlo.
+	r.GET("/invites/:token", inviteByIP.ByIP(), guestHandler.GetInvite)
+
+	// El enlace que se comparte por WhatsApp apunta acá: una página HTML que
+	// abre la app si está instalada y ofrece descargarla si no. Los dos
+	// .well-known son lo que hace que el sistema operativo se salte la página y
+	// abra la app directo. Ver internal/handler/applinks_handler.go.
+	r.GET("/i/:token", inviteByIP.ByIP(), appLinksHandler.InvitePage)
+	r.GET("/.well-known/assetlinks.json", appLinksHandler.AssetLinks)
+	r.GET("/.well-known/apple-app-site-association", appLinksHandler.AppleAppSiteAssociation)
+
 	// Rutas protegidas — requieren JWT válido
 	protected := r.Group("/")
 	protected.Use(auth.Middleware(signer))
@@ -193,6 +215,8 @@ func main() {
 		protected.GET("/memberships/:membershipId", rosterHandler.GetMember)
 		protected.PATCH("/teams/:id/roster/:membershipId/status", rosterHandler.UpdateStatus)
 		protected.PATCH("/teams/:id/roster/:membershipId/role", rosterHandler.UpdateRole)
+		// Sumar al plantel a un invitado que ya jugó: el "parche" que se queda.
+		protected.POST("/teams/:id/roster/:membershipId/promote", rosterHandler.PromoteGuest)
 
 		protected.GET("/teams/:id/fees", feeHandler.ListByTeamAndPeriod)
 		protected.POST("/teams/:id/generate-fees", feeHandler.Generate)
@@ -240,6 +264,14 @@ func main() {
 		protected.POST("/matches/:matchId/callups/respond", matchHandler.RespondToCallup)
 		protected.GET("/memberships/:membershipId/callups", matchHandler.ListCallupsByMembership)
 
+		// ── Invitados de un partido ("parches") ──
+		// Gente de afuera que completa una convocatoria. El enlace se canjea
+		// con una cuenta ya creada: el alta sigue siendo POST /auth/register.
+		protected.GET("/matches/:matchId/guest-invites", guestHandler.ListInvites)
+		protected.POST("/matches/:matchId/guest-invites", guestHandler.CreateInvite)
+		protected.POST("/invites/:token/accept", guestHandler.Accept)
+		protected.DELETE("/guest-invites/:inviteId", guestHandler.RevokeInvite)
+
 		// ── Cobros ──
 		protected.POST("/teams/:id/charges", chargeHandler.Split)
 		protected.GET("/teams/:id/charges", chargeHandler.ListByTeamAndPeriod)
@@ -251,6 +283,9 @@ func main() {
 		protected.POST("/charges/:chargeId/receipt", chargeHandler.SubmitReceipt)
 		protected.POST("/charges/:chargeId/confirm", chargeHandler.Confirm)
 		protected.POST("/charges/:chargeId/reject", chargeHandler.RejectReceipt)
+		// Cerrar un pendiente sin plata por la app: cobrado en efectivo, o
+		// incobrable. Es la única salida que tiene un cargo que nadie va a pagar.
+		protected.POST("/charges/:chargeId/waive", chargeHandler.Waive)
 
 		// ── Gastos ──
 		protected.GET("/teams/:id/expenses", expenseHandler.ListByTeamAndPeriod)
