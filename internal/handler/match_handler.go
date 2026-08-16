@@ -163,9 +163,24 @@ func (h *MatchHandler) ListCallupsByMembership(c *gin.Context) {
 		return
 	}
 
-	// Basta pertenecer al equipo: el historial de asistencia es información de
-	// plantel, la ve cualquier compañero.
-	if _, err := h.authz.requireMember(c, target.TeamID); abortAuthz(c, err) {
+	/*
+		El plantel se lee el historial entre sí; el invitado, solo el suyo.
+
+		Antes esto era `requireMember`, que deja afuera a los invitados, y con
+		eso el invitado no podía leer ni sus propias convocatorias: la app le
+		mostraba un inicio sin el partido al que acababa de confirmar. Su
+		vínculo con el equipo es ese partido, así que lo suyo tiene que poder
+		verlo; el historial de los demás no, que es información de plantel.
+
+		Es el mismo par que ya usa `ChargeHandler.ListByMembership`: entrar con
+		`requireMembership` —que cuenta a los invitados— y acotar después.
+	*/
+	me, err := h.authz.requireMembership(c, target.TeamID)
+	if abortAuthz(c, err) {
+		return
+	}
+	if me.IsGuest() && me.ID != membershipID {
+		c.JSON(http.StatusForbidden, gin.H{"error": ErrInsufficient.Error()})
 		return
 	}
 

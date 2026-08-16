@@ -183,6 +183,26 @@ type invitePageData struct {
 func (h *AppLinksHandler) renderPage(c *gin.Context, status int, data invitePageData) {
 	c.Status(status)
 	c.Header("Content-Type", "text/html; charset=utf-8")
+	/*
+		La CSP de la API no sirve para esta página.
+
+		`SecureHeaders` manda `default-src 'none'`, que es lo correcto para
+		respuestas JSON pero bloquea el <style> de acá: el navegador descarta la
+		hoja entera y muestra la invitación como HTML pelado, con serif y links
+		azules. No se ve con curl —que ignora la CSP— así que el síntoma solo
+		aparece en un teléfono de verdad, que es donde esta página vive.
+
+		Se reemplaza por la mínima que la deja andar. Sigue sin poder ejecutar
+		JavaScript ni traer nada de afuera: `default-src 'none'` cubre scripts,
+		imágenes y conexiones, y lo único que se habilita son estilos inline.
+		`'unsafe-inline'` acá no abre nada: la página no tiene scripts y lo único
+		variable que se escribe es el token, que va escapado dentro de un href y
+		nunca cerca de un bloque de estilos.
+	*/
+	c.Header(
+		"Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+	)
 	// Una invitación cambia de estado cuando se llena el cupo, así que la página
 	// no se puede cachear: mostraría lugares que ya no existen.
 	c.Header("Cache-Control", "no-store")

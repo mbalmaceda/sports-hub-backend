@@ -974,3 +974,74 @@ func TestGetCompetition_RejectsAGuestFromAnotherCompetition(t *testing.T) {
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
+
+/*
+Sus propias convocatorias sí: es lo que la app le muestra en el inicio.
+
+Antes esto pedía `requireMember`, que deja afuera a los invitados, y el parche
+que acababa de confirmar no veía en ninguna parte el partido al que iba: el
+inicio le quedaba vacío. El corte sigue estando, pero ahora es el correcto —lo
+suyo sí, el historial de los demás no.
+*/
+func TestGuestCanListTheirOwnCallups(t *testing.T) {
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	compr := &testutil.MockCompetitionRepo{}
+	chr := &testutil.MockChargeRepo{}
+	h := handler.NewMatchHandler(mr, memr, compr, chr, nil, nil)
+
+	memr.On("GetMemberByID", mock.Anything, "m-guest").Return(&membership.TeamMember{
+		MembershipID: "m-guest", UserID: "parche", TeamID: homeTeam,
+		Role: membership.RolePlayer, Kind: membership.KindGuest,
+		Status: membership.StatusActive,
+	}, nil)
+	memr.On("FindByUserAndTeam", mock.Anything, "parche", homeTeam).Return(&membership.Membership{
+		ID: "m-guest", UserID: "parche", TeamID: homeTeam,
+		Role: membership.RolePlayer, Kind: membership.KindGuest,
+		Status: membership.StatusActive,
+	}, nil)
+	mr.On("ListCallupsByMembership", mock.Anything, "m-guest").Return([]*match.Callup{
+		{ID: "cu-1", MatchID: "match-1", MembershipID: "m-guest", Status: match.CallupConfirmed},
+	}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "parche")
+	c.Params = gin.Params{{Key: "membershipId", Value: "m-guest"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h.ListCallupsByMembership(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// Las de un compañero, no: el historial de asistencia es información de
+// plantel, y el invitado no es del plantel.
+func TestGuestCannotListSomeoneElsesCallups(t *testing.T) {
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	compr := &testutil.MockCompetitionRepo{}
+	chr := &testutil.MockChargeRepo{}
+	h := handler.NewMatchHandler(mr, memr, compr, chr, nil, nil)
+
+	memr.On("GetMemberByID", mock.Anything, "m-titular").Return(&membership.TeamMember{
+		MembershipID: "m-titular", UserID: "titular", TeamID: homeTeam,
+		Role: membership.RolePlayer, Status: membership.StatusActive,
+	}, nil)
+	memr.On("FindByUserAndTeam", mock.Anything, "parche", homeTeam).Return(&membership.Membership{
+		ID: "m-guest", UserID: "parche", TeamID: homeTeam,
+		Role: membership.RolePlayer, Kind: membership.KindGuest,
+		Status: membership.StatusActive,
+	}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "parche")
+	c.Params = gin.Params{{Key: "membershipId", Value: "m-titular"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h.ListCallupsByMembership(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	mr.AssertNotCalled(t, "ListCallupsByMembership")
+}
