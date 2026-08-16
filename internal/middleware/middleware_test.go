@@ -1,6 +1,8 @@
 package middleware_test
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -247,4 +249,62 @@ func TestRequestID_IgnoresClientSupplied(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.NotEqual(t, "forjado-por-el-cliente", w.Header().Get("X-Request-Id"))
+}
+
+// Un 400 que los handlers devuelven solo en el body no puede quedar en un log
+// que diga únicamente "status=400": sin el mensaje no hay forma de saber qué
+// falló. El log de errores tiene que llevar el cuerpo de la respuesta.
+func TestLogger_IncludesErrorResponseBody(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	r := gin.New()
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger(logger))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "max_uses is too high"})
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	assert.Contains(t, buf.String(), "status=400")
+	assert.Contains(t, buf.String(), "max_uses is too high")
+}
+
+// Lo que devuelve una respuesta exitosa no se loguea: los 200/201 pueden
+// llevar datos personales o tokens y no son un error.
+func TestLogger_SuccessDoesNotLogResponseBody(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	r := gin.New()
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger(logger))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"token": "no-debe-salir-en-el-log"})
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	assert.NotContains(t, buf.String(), "no-debe-salir-en-el-log")
+}
+
+// El cuerpo capturado se recorta para que un error gigante no inunde el log.
+func TestLogger_TruncatesLargeResponseBody(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	r := gin.New()
+	r.Use(middleware.Logger(logger))
+	r.GET("/x", func(c *gin.Context) {
+		c.String(http.StatusBadRequest, strings.Repeat("a", 4096))
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	assert.Contains(t, buf.String(), "...")
+	assert.Contains(t, buf.String(), strings.Repeat("a", 512))
 }

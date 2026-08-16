@@ -41,19 +41,22 @@ son opcionales: la cuenta se crea igual sin ellos.
 registrar un RUT ya existente devuelve **409**.
 
 `tax_id` es opcional, pero si viene se valida el dígito verificador con el
-módulo 11 chileno: uno inventado devuelve **400**. La app móvil además lo exige
-para crear la cuenta, porque es la llave con la que un manager encuentra a un
-jugador para invitarlo.
+módulo 11 chileno: uno inventado devuelve **400**. La app móvil ya no lo manda
+—dejó de pedirlo en el alta— así que las cuentas nuevas nacen sin RUT y la
+búsqueda del manager (`GET /people/lookup`) las encuentra por `email`, no por
+`tax_id`.
 
-La contraseña va de **10 a 72 bytes**. El tope es de bcrypt, que ignora en
-silencio lo que pase de ahí. El email se guarda en minúscula.
+La contraseña solo tiene tope: **hasta 72 bytes**, que es el límite de bcrypt,
+que ignora en silencio lo que pase de ahí. No hay largo mínimo ni reglas de
+composición; vacía devuelve **400** porque el campo es obligatorio. El email se
+guarda en minúscula.
 
 **Body**
 ```json
 {
   "name": "Mirko Balmaceda",
   "email": "mirko@example.com",
-  "password": "minimo10chars",
+  "password": "la-que-quiera",
   "tax_id": "12.345.678-5",
   "favorite_sport": "football",
   "height_cm": 175,
@@ -102,7 +105,7 @@ cuenta.
 
 **Body**
 ```json
-{ "email": "mirko@example.com", "password": "minimo10chars" }
+{ "email": "mirko@example.com", "password": "la-que-quiera" }
 ```
 
 **Response 200** — igual que register  

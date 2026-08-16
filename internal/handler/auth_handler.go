@@ -22,6 +22,15 @@ import (
 // silencio, así que dos contraseñas largas con el mismo prefijo entrarían igual.
 // Se rechaza explícitamente en vez de dejar que el usuario crea que su
 // contraseña de 100 caracteres lo protege más.
+//
+// Es el único límite que le queda a la contraseña: no hay largo mínimo ni
+// reglas de composición. El mínimo era de 10 y se sacó porque el alta perdía
+// gente ahí, no porque hubiera dejado de importar; lo que sostiene la cuenta
+// hoy es el limitador de intentos del Login (ver `loginLimiter`), que es lo que
+// hace que una contraseña corta no se pueda probar a mansalva. Si alguna vez se
+// quiere un piso, es agregar `min=N` al binding de abajo y el mismo número en
+// `app/register.tsx` de la app: las dos validaciones tienen que decir lo mismo o
+// el formulario aprueba lo que el servidor rechaza.
 const maxPasswordBytes = 72
 
 // dummyPasswordHash sirve para gastar el mismo tiempo cuando el email no existe.
@@ -77,7 +86,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	var req struct {
 		Name          string     `json:"name"          binding:"required"`
 		Email         string     `json:"email"         binding:"required,email"`
-		Password      string     `json:"password"      binding:"required,min=10"`
+		Password      string     `json:"password"      binding:"required"`
 		TaxID         string     `json:"tax_id"`
 		FavoriteSport string     `json:"favorite_sport"`
 		HeightCm      *int       `json:"height_cm"`
@@ -96,10 +105,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at most 72 bytes"})
 		return
 	}
-	// El RUT sigue siendo opcional acá, pero si viene tiene que ser uno de
-	// verdad: es la llave con la que después un manager busca a esta persona
-	// para invitarla, y un RUT inventado la deja imposible de encontrar. La app
-	// ya lo valida, así que esto ataja a cualquier otro cliente.
+	// El RUT es opcional y la app ya no lo manda: dejó de pedirlo en el alta
+	// porque la búsqueda del manager funciona igual por correo. El campo sigue
+	// aceptándose para no romper a ningún otro cliente, y si viene tiene que ser
+	// uno de verdad: un RUT inventado deja a la persona imposible de encontrar
+	// por esa vía y ocupa el único que le corresponde a otra.
 	if req.TaxID != "" && !user.IsValidRUT(req.TaxID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "tax_id is not a valid RUT"})
 		return
