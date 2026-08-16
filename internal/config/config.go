@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -61,7 +63,8 @@ type Config struct {
 
 	// PublicBaseURL es el origen con el que se arman los enlaces compartibles,
 	// sin barra final. Vacío desactiva la página de invitación: mejor no servir
-	// nada que servir enlaces que apuntan a un host equivocado.
+	// nada que servir enlaces que apuntan a un host equivocado. Tiene que ser
+	// https salvo que apunte a la red local — ver `validatePublicBaseURL`.
 	PublicBaseURL string
 	// AndroidPackageName y AndroidCertFingerprints alimentan assetlinks.json,
 	// que es lo que hace que Android abra la app en vez del navegador. Los
@@ -158,10 +161,10 @@ func Load() (Config, error) {
 	// La barra final se recorta acá y no en cada uso: pegada a una ruta produce
 	// `//i/token`, que en algunos proxies no es lo mismo que `/i/token`.
 	publicBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/")
-	if publicBaseURL != "" && !strings.HasPrefix(publicBaseURL, "https://") {
-		// Android e iOS solo verifican App Links sobre HTTPS. Un enlace http
-		// abriría el navegador en vez de la app, en silencio.
-		return Config{}, fmt.Errorf("PUBLIC_BASE_URL must start with https://")
+	if publicBaseURL != "" {
+		if err := validatePublicBaseURL(publicBaseURL); err != nil {
+			return Config{}, err
+		}
 	}
 
 	fingerprints := make([]string, 0)
@@ -197,6 +200,61 @@ func Load() (Config, error) {
 		AppleAppID:              strings.TrimSpace(os.Getenv("APPLE_APP_ID")),
 		PlayStoreURL:            strings.TrimSpace(os.Getenv("PLAY_STORE_URL")),
 	}, nil
+}
+
+/*
+validatePublicBaseURL exige https, salvo que el enlace apunte a la propia red.
+
+Android e iOS solo verifican App Links sobre HTTPS: un http en producción
+abriría el navegador en vez de la app, en silencio, y por eso el arranque falla
+antes que servir enlaces así.
+
+En desarrollo no hay TLS. El backend corre en la LAN y el teléfono abre la
+página por IP, así que exigir https dejaba dos salidas y las dos malas: levantar
+un túnel para probar el flujo de parches, o dejar la variable vacía y que la app
+avise que las invitaciones no están habilitadas. Probar el enlace era más caro
+que escribirlo.
+
+El corte es el destino y no un flag de entorno —no hay ninguno en esta config, y
+un `APP_ENV=dev` sería justo la clase de perilla que alguien deja prendida en el
+lugar equivocado—. Loopback y los rangos privados de la RFC 1918 no son
+alcanzables desde afuera: un http ahí no puede ser producción mal configurada,
+porque un enlace así no le llega a nadie. Cualquier host público sigue exigiendo
+https.
+*/
+func validatePublicBaseURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("PUBLIC_BASE_URL is not a valid URL: %w", err)
+	}
+
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLocalHost(parsed.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf(
+			"PUBLIC_BASE_URL must start with https:// (http is only allowed for localhost or a private network address)",
+		)
+	default:
+		return fmt.Errorf("PUBLIC_BASE_URL must start with https://")
+	}
+}
+
+// isLocalHost reconoce las direcciones que no salen de la máquina o de la red
+// local: el `localhost` del emulador y la IP con la que el teléfono llega al
+// backend por wifi.
+func isLocalHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 /*
