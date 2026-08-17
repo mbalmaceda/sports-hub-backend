@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -28,10 +29,22 @@ func init() {
 const testSecret = "test-secret-32-bytes-long-enough!"
 
 func newAuthHandler(userRepo *testutil.MockUserRepo, tokenRepo *testutil.MockTokenRepo) *handler.AuthHandler {
+	return newAuthHandlerWithGoogle(userRepo, tokenRepo, nil)
+}
+
+// newAuthHandlerWithGoogle es el mismo handler con un verificador de Google
+// puesto. Va aparte para que los tests de siempre no tengan que nombrar algo
+// que no usan: sin verificador, `/auth/google` contesta 503 y listo.
+func newAuthHandlerWithGoogle(
+	userRepo *testutil.MockUserRepo,
+	tokenRepo *testutil.MockTokenRepo,
+	google auth.GoogleVerifier,
+) *handler.AuthHandler {
 	return handler.NewAuthHandler(
 		userRepo, tokenRepo,
 		auth.NewSigner(testSecret, ""),
 		nil, // sin límite por cuenta: lo que se prueba acá es el flujo, no el limitador
+		google,
 		slog.New(slog.DiscardHandler),
 	)
 }
@@ -459,4 +472,140 @@ func TestLogout_UnknownTokenStillReturnsOK(t *testing.T) {
 	h.Logout(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// ─── Entrar con Google ───────────────────────────────────────────────────────
+
+// fakeGoogle devuelve lo que se le diga sin salir a la red. Lo que se prueba
+// acá es qué hace el handler con la identidad, no la criptografía de Google.
+type fakeGoogle struct {
+	identity *auth.GoogleIdentity
+	err      error
+}
+
+func (f fakeGoogle) Verify(context.Context, string) (*auth.GoogleIdentity, error) {
+	return f.identity, f.err
+}
+
+func postGoogle(h *handler.AuthHandler, body string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/auth/google", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.GoogleSignIn(c)
+	return w
+}
+
+// El correo ya registrado entra a su cuenta. Sin esto, quien se dio de alta con
+// contraseña y después toca "Entrar con Google" terminaría con dos cuentas y su
+// equipo en la otra.
+func TestGoogleSignIn_LinksExistingAccountByEmail(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+	existing := &user.User{ID: "user-1", Name: "Mirko", Email: "mirko@zports.cl"}
+	userRepo.On("FindByEmail", mock.Anything, "mirko@zports.cl").Return(existing, nil)
+	expectIssueTokens(tokenRepo)
+
+	h := newAuthHandlerWithGoogle(userRepo, tokenRepo, fakeGoogle{identity: &auth.GoogleIdentity{
+		Subject: "sub-1", Email: "Mirko@zports.cl", EmailVerified: true, Name: "Mirko G",
+	}})
+
+	w := postGoogle(h, `{"id_token":"lo-que-sea"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	userRepo.AssertNotCalled(t, "Create")
+}
+
+// Correo nuevo: cuenta nueva y sin contraseña. El hash vacío es lo que después
+// hace que `Login` la rechace por la puerta de la contraseña.
+func TestGoogleSignIn_CreatesAccountWithoutPassword(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+	userRepo.On("FindByEmail", mock.Anything, "nueva@zports.cl").Return(nil, user.ErrNotFound)
+	userRepo.On("Create", mock.Anything, mock.MatchedBy(func(u *user.User) bool {
+		return u.Email == "nueva@zports.cl" && u.Name == "Persona Nueva" && u.PasswordHash == ""
+	})).Return(nil)
+	expectIssueTokens(tokenRepo)
+
+	h := newAuthHandlerWithGoogle(userRepo, tokenRepo, fakeGoogle{identity: &auth.GoogleIdentity{
+		Subject: "sub-2", Email: "nueva@zports.cl", EmailVerified: true, Name: "Persona Nueva",
+	}})
+
+	w := postGoogle(h, `{"id_token":"lo-que-sea"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	userRepo.AssertExpectations(t)
+}
+
+/*
+Un correo sin verificar no entra.
+
+Es el chequeo que sostiene la vinculación por correo: sin él, cualquiera que
+consiga un ID token con un correo declarado —y no probado— se queda con la
+cuenta de esa persona.
+*/
+func TestGoogleSignIn_RejectsUnverifiedEmail(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+
+	h := newAuthHandlerWithGoogle(userRepo, tokenRepo, fakeGoogle{identity: &auth.GoogleIdentity{
+		Subject: "sub-3", Email: "sinverificar@zports.cl", EmailVerified: false, Name: "X",
+	}})
+
+	w := postGoogle(h, `{"id_token":"lo-que-sea"}`)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	userRepo.AssertNotCalled(t, "FindByEmail")
+	userRepo.AssertNotCalled(t, "Create")
+}
+
+// Un token que el verificador rechaza —firma mala, vencido, o emitido para otra
+// app— no llega a tocar la base.
+func TestGoogleSignIn_RejectsInvalidToken(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+
+	h := newAuthHandlerWithGoogle(userRepo, tokenRepo, fakeGoogle{err: auth.ErrInvalidGoogleToken})
+
+	w := postGoogle(h, `{"id_token":"falso"}`)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	userRepo.AssertNotCalled(t, "FindByEmail")
+}
+
+// Sin configurar, el endpoint lo dice en vez de fallar de una forma rara.
+func TestGoogleSignIn_UnavailableWhenNotConfigured(t *testing.T) {
+	h := newAuthHandler(&testutil.MockUserRepo{}, &testutil.MockTokenRepo{})
+
+	w := postGoogle(h, `{"id_token":"lo-que-sea"}`)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+/*
+A una cuenta de Google no se entra con contraseña.
+
+Su `password_hash` está vacío. bcrypt ya lo rechazaría, pero el handler corta
+antes y explícitamente: este test es el que avisa si alguien saca ese corte
+creyendo que es redundante.
+*/
+func TestLogin_RejectsAccountWithoutPassword(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+	userRepo.On("FindByEmail", mock.Anything, "google@zports.cl").
+		Return(&user.User{ID: "user-9", Email: "google@zports.cl", PasswordHash: ""}, nil)
+
+	h := newAuthHandler(userRepo, tokenRepo)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/auth/login",
+		strings.NewReader(`{"email":"google@zports.cl","password":""}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.Login(c)
+
+	// El binding exige contraseña no vacía, así que ni siquiera llega al hash:
+	// las dos puertas están cerradas, y esta es la primera.
+	assert.NotEqual(t, http.StatusOK, w.Code)
+	tokenRepo.AssertNotCalled(t, "Create")
 }

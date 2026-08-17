@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -60,7 +61,9 @@ type AuthHandler struct {
 	// stuffing repartido entre muchas IPs contra una misma cuenta, que el
 	// limitador por IP del router no ve.
 	loginLimiter AttemptLimiter
-	logger       *slog.Logger
+	// google es nil cuando la instalación no tiene Google Sign-In configurado.
+	google auth.GoogleVerifier
+	logger *slog.Logger
 }
 
 func NewAuthHandler(
@@ -68,6 +71,7 @@ func NewAuthHandler(
 	tokens auth.RefreshTokenRepository,
 	signer *auth.Signer,
 	loginLimiter AttemptLimiter,
+	google auth.GoogleVerifier,
 	logger *slog.Logger,
 ) *AuthHandler {
 	if logger == nil {
@@ -78,6 +82,7 @@ func NewAuthHandler(
 		tokens:       tokens,
 		signer:       signer,
 		loginLimiter: loginLimiter,
+		google:       google,
 		logger:       logger,
 	}
 }
@@ -196,8 +201,118 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	/*
+		Sin contraseña no se entra con contraseña.
+
+		Una cuenta creada con Google tiene el hash vacío. `bcrypt` ya rechaza un
+		hash así —es más corto que su propio encabezado— pero el corte va
+		explícito: que la puerta esté cerrada por una casualidad afortunada de
+		la librería es exactamente lo que alguien "simplifica" un martes.
+	*/
+	if u.PasswordHash == "" {
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	}
+
+	accessToken, refreshToken, err := h.issueTokens(c.Request.Context(), u, "")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not issue tokens"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"user":          u,
+	})
+}
+
+/*
+GoogleSignIn POST /auth/google — entrar con la cuenta de Google.
+
+Google no reemplaza a este login, lo alimenta: lo que la app manda es el ID
+token que le dio Google, y lo que se lleva de vuelta son los mismos access y
+refresh de siempre. La sesión de la app sigue siendo la de este backend, y nada
+río abajo se entera de por dónde entró la persona.
+
+Dos reglas sostienen que esto sea seguro:
+
+  - La **audiencia** del token tiene que ser una de las apps de ZPORTS. Lo hace
+    el verificador; sin ese chequeo, un ID token emitido para cualquier otra app
+    de Google entraría acá y se llevaría la sesión del dueño de ese correo.
+  - El correo tiene que venir **verificado por Google**. Es lo que permite el
+    paso siguiente —vincular por correo— sin que nadie se quede con una cuenta
+    ajena declarando un correo que no es suyo.
+
+Con eso, un correo que ya existe **entra a esa cuenta** en vez de crear otra. Es
+lo que evita que quien se registró con contraseña y después toca "Entrar con
+Google" termine con dos cuentas, cada una con su equipo, y sin entender por qué
+no ve nada de lo suyo.
+*/
+func (h *AuthHandler) GoogleSignIn(c *gin.Context) {
+	if h.google == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "google sign-in is not configured"})
+		return
+	}
+
+	var req struct {
+		IDToken string `json:"id_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	identity, err := h.google.Verify(c.Request.Context(), req.IDToken)
+	if err != nil {
+		// El detalle queda acá y no en la respuesta: al cliente le alcanza con
+		// que el token no sirve, y decirle por qué le sirve a quien prueba.
+		h.logger.Warn("google id token rejected", "error", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid google token"})
+		return
+	}
+
+	email := user.NormalizeEmail(identity.Email)
+	if email == "" || !identity.EmailVerified {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "google account has no verified email"})
+		return
+	}
+
+	u, err := h.users.FindByEmail(c.Request.Context(), email)
+	switch {
+	case err == nil:
+		// Ya existe: se entra a esa cuenta. No se toca nada de su perfil —el
+		// nombre que tenga puesto es el que eligió, y Google no manda sobre eso.
+	case errors.Is(err, user.ErrNotFound):
+		/*
+			Cuenta nueva, sin contraseña.
+
+			`PasswordHash` queda vacío y así se queda: es lo que marca que a esta
+			cuenta se entra por Google. `Login` corta explícitamente cuando el
+			hash está vacío, así que nadie entra con una contraseña en blanco.
+
+			Si Google no manda nombre —puede pasar— se usa la parte local del
+			correo antes que dejar la cuenta sin nombre: el nombre se muestra en
+			la nómina y en los cobros, y una fila en blanco no se puede leer.
+		*/
+		name := strings.TrimSpace(identity.Name)
+		if name == "" {
+			name = email[:strings.Index(email, "@")]
+		}
+		u = &user.User{Name: name, Email: email}
+		if createErr := h.users.Create(c.Request.Context(), u); createErr != nil {
+			h.logger.Error("could not create user from google", "error", createErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create the account"})
+			return
+		}
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
 

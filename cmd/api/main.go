@@ -108,7 +108,12 @@ func main() {
 	}()
 
 	// Handlers
-	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, signer, loginByAccount, slog.Default())
+	//
+	// Sin GOOGLE_CLIENT_IDS el verificador es nil y el endpoint de Google
+	// contesta 503: la app puede preguntar y enterarse, en vez de mandar tokens
+	// contra algo que no está configurado.
+	googleVerifier := auth.NewGoogleVerifier(cfg.GoogleClientIDs)
+	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, signer, loginByAccount, googleVerifier, slog.Default())
 	userHandler := handler.NewUserHandler(userRepo)
 	firebaseHandler := handler.NewFirebaseHandler(firebaseAuth)
 	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo, firebaseAuth)
@@ -170,6 +175,10 @@ func main() {
 	// El límite por cuenta va adentro del handler, donde ya está parseado el
 	// email: acá solo se puede limitar por IP.
 	r.POST("/auth/login", loginByIP.ByIP(), authHandler.Login)
+	// La otra puerta de entrada, con el mismo limitador por IP. No lleva el de
+	// por cuenta: acá no hay contraseña que adivinar, la credencial la firma
+	// Google.
+	r.POST("/auth/google", loginByIP.ByIP(), authHandler.GoogleSignIn)
 	r.POST("/auth/refresh", refreshByIP.ByIP(), authHandler.Refresh)
 	r.POST("/auth/logout", authHandler.Logout)
 

@@ -79,6 +79,20 @@ type Config struct {
 	// PlayStoreURL es a dónde mandar a quien no tiene la app. Vacío esconde el
 	// botón en vez de llevar a una página rota.
 	PlayStoreURL string
+
+	// ── Google Sign-In ───────────────────────────────────────────────────────
+
+	// GoogleClientIDs son las audiencias que se aceptan en el ID token: el
+	// client id de Android, el de iOS y el web, separados por coma. Van todas
+	// porque cada plataforma emite el token con la suya, y el chequeo de
+	// audiencia es lo que impide que un token emitido para otra app de Google
+	// sirva para entrar acá. Vacío desactiva el endpoint.
+	GoogleClientIDs []string
+}
+
+// GoogleSignInEnabled indica si se puede entrar con Google.
+func (c Config) GoogleSignInEnabled() bool {
+	return len(c.GoogleClientIDs) > 0
 }
 
 // InviteLinksEnabled indica si se puede armar y servir un enlace compartible.
@@ -174,6 +188,13 @@ func Load() (Config, error) {
 		}
 	}
 
+	googleClientIDs := make([]string, 0)
+	for _, raw := range strings.Split(os.Getenv("GOOGLE_CLIENT_IDS"), ",") {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			googleClientIDs = append(googleClientIDs, trimmed)
+		}
+	}
+
 	androidPackage := strings.TrimSpace(os.Getenv("ANDROID_PACKAGE_NAME"))
 	if androidPackage == "" {
 		androidPackage = "com.zports.app"
@@ -199,6 +220,7 @@ func Load() (Config, error) {
 		AndroidCertFingerprints: fingerprints,
 		AppleAppID:              strings.TrimSpace(os.Getenv("APPLE_APP_ID")),
 		PlayStoreURL:            strings.TrimSpace(os.Getenv("PLAY_STORE_URL")),
+		GoogleClientIDs:         googleClientIDs,
 	}, nil
 }
 

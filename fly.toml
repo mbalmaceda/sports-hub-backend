@@ -32,6 +32,15 @@ primary_region = 'gru'
   # la app móvil no manda header Origin y CORS no la afecta.
   CORS_ALLOWED_ORIGINS = 'https://zports.cl,https://zports-web.vercel.app'
 
+  # Audiencias válidas del ID token de Google, en orden: web (la que usa
+  # Android) e iOS. Van las dos porque cada plataforma emite el token con la
+  # suya y las dos son nuestras; el chequeo de audiencia es lo que impide que un
+  # token emitido para otra app entre acá.
+  #
+  # No son secretos —viajan en cada request de OAuth y se leen del APK— así que
+  # van versionados acá y no en `fly secrets`, igual que los orígenes de CORS.
+  GOOGLE_CLIENT_IDS = '540116434238-4p9vski4jp6b9p5e3d7l5vb128nluqj4.apps.googleusercontent.com,540116434238-ljnrt0mfrr837bpufb7pca767ivehgt0.apps.googleusercontent.com'
+
 [http_service]
   internal_port = 8080
   force_https = true
