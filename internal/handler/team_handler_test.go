@@ -283,3 +283,38 @@ func TestUpdateFeeConfig_InvalidDueDay(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
+
+/*
+Poner la cuota mensual en cero es apagarla, y tiene que poder hacerse.
+
+Con `int64` a secas, el `binding:"required"` de gin rechazaba el cero y un
+equipo que activó la cuota una vez no podía volver atrás desde la app. Importa
+más desde que la pestaña de Cuotas se muestra solo si hay cuota configurada: sin
+esto, esa sección no se puede apagar nunca.
+*/
+func TestUpdateFeeConfig_ZeroTurnsTheFeeOff(t *testing.T) {
+	tr := &testutil.MockTeamRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := handler.NewTeamHandler(tr, memr, nil)
+
+	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+	tr.On("UpdateFeeConfig", mock.Anything, homeTeam, mock.MatchedBy(func(c team.FeeConfig) bool {
+		return c.FeeAmount == 0 && c.FeeDueDay == 5
+	})).Return(nil)
+	tr.On("FindByID", mock.Anything, homeTeam).
+		Return(&team.Team{ID: homeTeam, Name: "Clan"}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/teams/"+homeTeam+"/fee-config",
+		strings.NewReader(`{"fee_amount":0,"fee_due_day":5}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateFeeConfig(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	tr.AssertExpectations(t)
+}

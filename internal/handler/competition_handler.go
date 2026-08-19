@@ -14,6 +14,9 @@ import (
 
 // invitationTTL es cuánto vive una invitación a competencia sin respuesta.
 // Vencen solas para que la bandeja no se llene de cosas de hace meses.
+//
+// Es un techo, no un plazo fijo: si el torneo arranca antes, vence con el
+// torneo (ver `responseDeadline`).
 const invitationTTL = 7 * 24 * time.Hour
 
 type CompetitionHandler struct {
@@ -181,12 +184,14 @@ func (h *CompetitionHandler) Invite(c *gin.Context) {
 		return
 	}
 
+	// Nunca después del arranque del torneo: una invitación que sigue "viva"
+	// cuando la competencia ya empezó es una que no se puede aceptar.
 	inv := &competition.Invitation{
 		CompetitionID: comp.ID,
 		FromTeamID:    comp.OrganizerTeamID,
 		ToTeamID:      req.ToTeamID,
 		Status:        competition.InvitationSent,
-		ExpiresAt:     time.Now().Add(invitationTTL),
+		ExpiresAt:     responseDeadline(time.Now(), invitationTTL, comp.StartAt),
 	}
 	if err := h.competitions.CreateInvitation(c.Request.Context(), inv); err != nil {
 		// El índice parcial de la tabla rechaza una segunda invitación abierta

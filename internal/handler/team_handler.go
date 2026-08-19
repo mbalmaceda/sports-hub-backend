@@ -133,17 +133,33 @@ func (h *TeamHandler) List(c *gin.Context) {
 }
 
 func (h *TeamHandler) UpdateFeeConfig(c *gin.Context) {
+	/*
+		El monto entra como puntero a propósito.
+
+		Con `int64` a secas, `binding:"required"` rechaza el cero, y cero es
+		justamente "este equipo no cobra cuota mensual": un equipo que la activó
+		una vez no podía volver atrás desde la app, y el error que le llegaba
+		era el de gin crudo, sin traducir.
+
+		Dejó de ser un detalle cuando la pestaña de Cuotas pasó a mostrarse solo
+		si hay cuota configurada: sin poder volver a cero, esa sección no se
+		puede apagar. Es el mismo motivo por el que el marcador recibe `*int`.
+	*/
 	var req struct {
-		FeeAmount int64 `json:"fee_amount" binding:"required"`
-		FeeDueDay int   `json:"fee_due_day" binding:"required,min=1,max=31"`
+		FeeAmount *int64 `json:"fee_amount" binding:"required"`
+		FeeDueDay int    `json:"fee_due_day" binding:"required,min=1,max=31"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if *req.FeeAmount < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fee amount cannot be negative"})
+		return
+	}
 
 	err := h.repo.UpdateFeeConfig(c.Request.Context(), c.Param("id"), team.FeeConfig{
-		FeeAmount: req.FeeAmount,
+		FeeAmount: *req.FeeAmount,
 		FeeDueDay: req.FeeDueDay,
 	})
 	if err != nil {

@@ -143,6 +143,21 @@ func PerPlayerShare(totalAmount int64, playersPerSide int) int64 {
 	return ceilDiv(totalAmount, int64(playersPerSide)*2)
 }
 
+/*
+TeamShare es la mitad del lugar: lo que le toca poner a cada equipo.
+
+Redondea hacia arriba, igual que la cuota por jugador, para que las dos mitades
+nunca sumen menos que el costo real.
+
+Vive acá y no repetida en la deuda entre equipos a propósito: la mitad que el
+rival le transfiere al organizador tiene que ser exactamente la misma que el
+reparto usa para calcular el excedente. Dos redondeos distintos dejarían un peso
+colgado que nadie sabría de quién es.
+*/
+func TeamShare(totalAmount int64) int64 {
+	return ceilDiv(totalAmount, 2)
+}
+
 func SplitMatchCost(totalAmount int64, playersPerSide int, payerMembershipIDs []string) MatchCostSplit {
 	return SplitMatchCostWithShare(totalAmount, PerPlayerShare(totalAmount, playersPerSide), payerMembershipIDs)
 }
@@ -155,7 +170,7 @@ func SplitMatchCost(totalAmount int64, playersPerSide int, payerMembershipIDs []
 // Recalcularlo abriría la puerta a que dos jugadores del mismo partido terminen
 // con montos distintos si la fórmula cambia entremedio.
 func SplitMatchCostWithShare(totalAmount, perPlayer int64, payerMembershipIDs []string) MatchCostSplit {
-	teamShare := ceilDiv(totalAmount, 2)
+	teamShare := TeamShare(totalAmount)
 
 	if len(payerMembershipIDs) == 0 || totalAmount <= 0 || perPlayer <= 0 {
 		return MatchCostSplit{Lines: []Line{}, TeamShare: teamShare}

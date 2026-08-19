@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -11,17 +12,22 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/friendly"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/settlement"
 )
 
 // challengeTTL es cuánto tiene el rival para responder antes de que la
 // propuesta caduque. Dos días: suficiente para consultarlo con el equipo, poco
 // como para no dejar la fecha bloqueada indefinidamente.
+//
+// Es un techo, no un plazo fijo: si el partido es antes, vence con el partido
+// (ver `responseDeadline`).
 const challengeTTL = 48 * time.Hour
 
 type FriendlyHandler struct {
 	friendlies   friendly.Repository
 	competitions competition.Repository
 	matches      match.Repository
+	settlements  settlement.Repository
 	authz        teamAuthorizer
 }
 
@@ -30,11 +36,13 @@ func NewFriendlyHandler(
 	competitions competition.Repository,
 	matches match.Repository,
 	memberships membership.Repository,
+	settlements settlement.Repository,
 ) *FriendlyHandler {
 	return &FriendlyHandler{
 		friendlies:   friendlies,
 		competitions: competitions,
 		matches:      matches,
+		settlements:  settlements,
 		authz:        teamAuthorizer{memberships: memberships},
 	}
 }
@@ -173,7 +181,7 @@ func (h *FriendlyHandler) Create(c *gin.Context) {
 		ChallengerTeamID: teamID,
 		ChallengedTeamID: req.ChallengedTeamID,
 		Status:           friendly.StatusPending,
-		ExpiresAt:        time.Now().Add(challengeTTL),
+		ExpiresAt:        responseDeadline(time.Now(), challengeTTL, &req.ProposedStartAt),
 	}
 	first := &friendly.Proposal{
 		ProposedByTeamID: teamID,
@@ -334,6 +342,20 @@ func (h *FriendlyHandler) Accept(c *gin.Context) {
 		return
 	}
 
+	/*
+		La hora del partido es el plazo real, más allá de lo que diga expires_at.
+
+		Desde `responseDeadline` un desafío no puede vencer después del partido,
+		pero los que ya estaban en la base nacieron con 48 horas fijas y pueden
+		seguir "abiertos" con la fecha pasada. Aceptar uno de esos creaba un
+		partido con fecha anterior a hoy: nace en el historial, con convocatorias
+		que nadie va a responder y cobros por una cancha que no se usó.
+	*/
+	if !latest.ProposedStartAt.After(time.Now()) {
+		c.JSON(http.StatusConflict, gin.H{"error": friendly.ErrExpired.Error()})
+		return
+	}
+
 	if err := h.friendlies.UpdateStatus(c.Request.Context(), ch.ID, friendly.StatusAccepted); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not accept friendly"})
 		return
@@ -380,6 +402,30 @@ func (h *FriendlyHandler) Accept(c *gin.Context) {
 	}
 
 	_ = h.competitions.UpdateStatus(c.Request.Context(), ch.CompetitionID, competition.StatusActive)
+
+	/*
+		La mitad de la cancha que le toca al rival.
+
+		La reserva y la paga el organizador —el que desafió—, así que el retado
+		le debe su mitad. Nace acá y no al crear la competencia porque recién
+		ahora existe el compromiso: hasta el "acepto" el desafío podía quedar
+		sin respuesta, y una deuda contra un partido que nunca se jugó es basura
+		en el inicio del que la recibe.
+
+		Ojo con el supuesto: el acreedor es siempre el retador, aunque una
+		contraoferta haya mudado el partido a la cancha del otro. Es la regla
+		del producto —organiza el que desafía, y el que organiza paga el lugar—
+		y el día que eso no alcance, lo que corresponde es que la propuesta diga
+		quién pone la cancha, no adivinarlo acá.
+	*/
+	if comp, err := h.competitions.FindByID(c.Request.Context(), ch.CompetitionID); err == nil {
+		ensureVenueSettlement(
+			c.Request.Context(), h.settlements, comp, ch.ChallengerTeamID, ch.ChallengedTeamID,
+		)
+	} else {
+		slog.Error("could not read the competition to record what the rival owes",
+			"error", err, "competition_id", ch.CompetitionID)
+	}
 
 	ch.Status = friendly.StatusAccepted
 	c.JSON(http.StatusOK, gin.H{"challenge": ch, "match": m})

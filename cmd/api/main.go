@@ -63,6 +63,7 @@ func main() {
 	expenseRepo := postgres.NewExpenseRepository(pool)
 	onboardingRepo := postgres.NewOnboardingRepository(pool)
 	guestInviteRepo := postgres.NewGuestInviteRepository(pool)
+	settlementRepo := postgres.NewSettlementRepository(pool)
 
 	// Notifier. Los tokens de push viven en la tabla de usuarios, así que el
 	// repositorio de usuarios es el que sabe a qué dispositivos escribir.
@@ -121,10 +122,13 @@ func main() {
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
 	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo, matchRepo)
-	friendlyHandler := handler.NewFriendlyHandler(friendlyRepo, competitionRepo, matchRepo, rosterRepo)
+	friendlyHandler := handler.NewFriendlyHandler(
+		friendlyRepo, competitionRepo, matchRepo, rosterRepo, settlementRepo)
 	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, competitionRepo, chargeRepo, notifications, firebaseAuth)
 	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo, notifications)
 	expenseHandler := handler.NewExpenseHandler(expenseRepo, competitionRepo, rosterRepo)
+	settlementHandler := handler.NewSettlementHandler(
+		settlementRepo, competitionRepo, matchRepo, rosterRepo, teamRepo)
 	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo, notifications, firebaseAuth)
 	guestHandler := handler.NewGuestHandler(
 		guestInviteRepo, matchRepo, rosterRepo, competitionRepo, chargeRepo, teamRepo, userRepo, firebaseAuth, cfg)
@@ -271,6 +275,9 @@ func main() {
 		protected.GET("/matches/:matchId/callups", matchHandler.ListCallups)
 		protected.POST("/matches/:matchId/callups", matchHandler.CallUp)
 		protected.POST("/matches/:matchId/callups/respond", matchHandler.RespondToCallup)
+		// El marcador cierra el partido. PUT y no POST porque es un upsert:
+		// mandarlo de nuevo corrige el resultado, no agrega otro.
+		protected.PUT("/matches/:matchId/result", matchHandler.SaveResult)
 		protected.GET("/memberships/:membershipId/callups", matchHandler.ListCallupsByMembership)
 
 		// ── Invitados de un partido ("parches") ──
@@ -295,6 +302,14 @@ func main() {
 		// Cerrar un pendiente sin plata por la app: cobrado en efectivo, o
 		// incobrable. Es la única salida que tiene un cargo que nadie va a pagar.
 		protected.POST("/charges/:chargeId/waive", chargeHandler.Waive)
+
+		// ── Lo que un equipo le debe a otro por la cancha ──
+		// La reserva y la paga el organizador; el retado le transfiere su
+		// mitad. Es una sola transferencia entre managers, no catorce.
+		protected.GET("/teams/:id/settlements", settlementHandler.ListByTeam)
+		protected.GET("/competitions/:competitionId/settlement", settlementHandler.GetByCompetition)
+		protected.GET("/settlements/:settlementId/bank-account", settlementHandler.GetPayeeBankAccount)
+		protected.POST("/settlements/:settlementId/pay", settlementHandler.Pay)
 
 		// ── Gastos ──
 		protected.GET("/teams/:id/expenses", expenseHandler.ListByTeamAndPeriod)

@@ -18,6 +18,7 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/friendly"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/settlement"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
 	"github.com/mbalmaceda/sports-hub-backend/internal/testutil"
 )
@@ -53,13 +54,21 @@ func openChallenge() *friendly.Challenge {
 	}
 }
 
+// El repo de liquidaciones entra por variádico para no tocar los trece casos
+// que no tienen nada que ver con la deuda entre equipos: los que sí, pasan el
+// suyo y le ponen expectativas.
 func newFriendlyHandler(
 	fr *testutil.MockFriendlyRepo,
 	cr *testutil.MockCompetitionRepo,
 	mr *testutil.MockMatchRepo,
 	memr *testutil.MockMembershipRepo,
+	sr ...*testutil.MockSettlementRepo,
 ) *handler.FriendlyHandler {
-	return handler.NewFriendlyHandler(fr, cr, mr, memr)
+	settlements := &testutil.MockSettlementRepo{}
+	if len(sr) > 0 {
+		settlements = sr[0]
+	}
+	return handler.NewFriendlyHandler(fr, cr, mr, memr, settlements)
 }
 
 // El equipo que hizo la última propuesta no puede aceptarla. Sin este chequeo
@@ -130,6 +139,10 @@ func TestAcceptFriendly_OpponentAcceptsAndMatchIsCreated(t *testing.T) {
 	// La competencia se alinea con la propuesta aceptada: si hubo contraoferta,
 	// la fecha con la que nació ya no es la que se juega.
 	cr.On("UpdateSchedule", mock.Anything, ch.CompetitionID, kickoff, "Complejo Municipal").Return(nil)
+	// Al aceptar se lee la competencia para saber cuánto le toca al rival. Sin
+	// costo de lugar no hay deuda que anotar, que es el caso de este partido.
+	cr.On("FindByID", mock.Anything, ch.CompetitionID).
+		Return(&competition.Competition{ID: ch.CompetitionID}, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -381,4 +394,215 @@ func TestCreateInternalMatch_RejectsPastDate(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	cr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+}
+
+/*
+El plazo para responder no puede sobrevivir al partido.
+
+Es el caso del amistoso para hoy a la tarde: con las 48 horas fijas de antes, el
+desafío vencía pasado mañana. El rival veía un contador que prometía más tiempo
+del que existía y, si aceptaba al día siguiente, se creaba un partido con fecha
+pasada.
+*/
+func TestCreateFriendly_DeadlineNeverOutlivesTheMatch(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	kickoff := time.Now().Add(3 * time.Hour).Truncate(time.Second)
+
+	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+	cr.On("Create", mock.Anything, mock.Anything).Return(nil)
+	fr.On("Create", mock.Anything, mock.MatchedBy(func(ch *friendly.Challenge) bool {
+		return ch.ExpiresAt.Equal(kickoff)
+	}), mock.Anything).Return(nil)
+
+	body := `{"challenged_team_id":"` + awayTeam + `","name":"Amistoso","sport_id":"football",` +
+		`"proposed_start_at":"` + kickoff.Format(time.RFC3339) + `"}`
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/friendlies", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Create(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	fr.AssertExpectations(t)
+}
+
+// Y cuando el partido es lejano manda el TTL: el techo no acorta de más.
+func TestCreateFriendly_DistantMatchKeepsTheFullTTL(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	kickoff := time.Now().Add(30 * 24 * time.Hour)
+
+	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+	cr.On("Create", mock.Anything, mock.Anything).Return(nil)
+	fr.On("Create", mock.Anything, mock.MatchedBy(func(ch *friendly.Challenge) bool {
+		// Los dos días de siempre, con margen para lo que tarda el test.
+		return ch.ExpiresAt.After(time.Now().Add(47*time.Hour)) &&
+			ch.ExpiresAt.Before(time.Now().Add(49*time.Hour))
+	}), mock.Anything).Return(nil)
+
+	body := `{"challenged_team_id":"` + awayTeam + `","name":"Amistoso","sport_id":"football",` +
+		`"proposed_start_at":"` + kickoff.Format(time.RFC3339) + `"}`
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/friendlies", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Create(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	fr.AssertExpectations(t)
+}
+
+/*
+Un desafío cuyo partido ya se jugó no se acepta, aunque su plazo diga que sigue
+vivo.
+
+Es la fila vieja: nació antes del techo, con 48 horas fijas sobre un partido que
+era esa misma tarde. Sin este corte, aceptarla creaba un partido con fecha
+pasada —convocatorias que nadie va a responder y cobros por una cancha que no se
+usó— y encima nacía directo en el historial.
+*/
+func TestAcceptFriendly_MatchAlreadyPlayedIsRejected(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr)
+
+	ch := openChallenge()
+	fr.On("FindByID", mock.Anything, ch.ID).Return(ch, nil)
+	memr.On("FindByUserAndTeam", mock.Anything, "user-away", homeTeam).
+		Return(nil, membership.ErrNotFound)
+	memr.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).
+		Return(managerOf(awayTeam, "user-away"), nil)
+	// El plazo del desafío todavía no venció, pero el partido era ayer.
+	fr.On("LatestProposal", mock.Anything, ch.ID).Return(&friendly.Proposal{
+		ID: "p-1", ChallengeID: ch.ID, ProposedByTeamID: homeTeam,
+		ProposedStartAt: time.Now().Add(-24 * time.Hour),
+	}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-away")
+	c.Params = gin.Params{{Key: "challengeId", Value: ch.ID}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/friendlies/"+ch.ID+"/accept", nil)
+
+	h.Accept(c)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "expired")
+	mr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	fr.AssertNotCalled(t, "UpdateStatus", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// ─── La mitad de la cancha que le toca al rival ───────────────────────────────
+
+// acceptSetup deja mockeado todo lo que Accept toca antes de la deuda, para que
+// los dos casos de abajo solo tengan que hablar de la deuda.
+func acceptSetup(
+	fr *testutil.MockFriendlyRepo,
+	cr *testutil.MockCompetitionRepo,
+	mr *testutil.MockMatchRepo,
+	memr *testutil.MockMembershipRepo,
+	ch *friendly.Challenge,
+) {
+	fr.On("FindByID", mock.Anything, ch.ID).Return(ch, nil)
+	memr.On("FindByUserAndTeam", mock.Anything, "user-away", homeTeam).
+		Return(nil, membership.ErrNotFound)
+	memr.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).
+		Return(managerOf(awayTeam, "user-away"), nil)
+	fr.On("LatestProposal", mock.Anything, ch.ID).Return(&friendly.Proposal{
+		ID: "p-1", ChallengeID: ch.ID, ProposedByTeamID: homeTeam,
+		ProposedStartAt: time.Now().Add(72 * time.Hour), ProposedVenue: "Complejo Municipal",
+	}, nil)
+	fr.On("UpdateStatus", mock.Anything, ch.ID, friendly.StatusAccepted).Return(nil)
+	mr.On("Create", mock.Anything, mock.Anything).Return(nil)
+	cr.On("UpsertEntry", mock.Anything, mock.Anything).Return(nil).Twice()
+	cr.On("UpdateStatus", mock.Anything, ch.CompetitionID, mock.Anything).Return(nil)
+	cr.On("UpdateSchedule", mock.Anything, ch.CompetitionID, mock.Anything, mock.Anything).Return(nil)
+}
+
+func acceptRequest(ch *friendly.Challenge) (*httptest.ResponseRecorder, *gin.Context) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-away")
+	c.Params = gin.Params{{Key: "challengeId", Value: ch.ID}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/friendlies/"+ch.ID+"/accept", nil)
+	return w, c
+}
+
+// Aceptar el amistoso deja anotado que el retado le debe la mitad de la cancha
+// al organizador. Es el tramo que faltaba: sin esto el rival le cobra a sus
+// jugadores y esa plata nunca llega al que pagó el lugar entero.
+func TestAcceptFriendly_RecordsWhatTheRivalOwes(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	sr := &testutil.MockSettlementRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr, sr)
+
+	ch := openChallenge()
+	acceptSetup(fr, cr, mr, memr, ch)
+	cr.On("FindByID", mock.Anything, ch.CompetitionID).Return(&competition.Competition{
+		ID:              ch.CompetitionID,
+		OrganizerTeamID: homeTeam,
+		VenueCost:       &competition.VenueCost{Amount: 28000, Currency: "CLP"},
+	}, nil)
+	sr.On("Create", mock.Anything, mock.MatchedBy(func(s *settlement.Settlement) bool {
+		// La mitad de $28.000, del retado hacia el organizador.
+		return s.Amount == 14000 &&
+			s.FromTeamID == awayTeam &&
+			s.ToTeamID == homeTeam &&
+			s.Source.ID == ch.CompetitionID
+	})).Return(&settlement.Settlement{ID: "st-1"}, nil)
+
+	w, c := acceptRequest(ch)
+	h.Accept(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	sr.AssertExpectations(t)
+}
+
+// Cancha gratis no deja deuda. Es un caso normal —el amistoso en la cancha
+// pública del barrio— y no algo que haya que anotar en cero.
+func TestAcceptFriendly_FreeVenueOwesNothing(t *testing.T) {
+	fr := &testutil.MockFriendlyRepo{}
+	cr := &testutil.MockCompetitionRepo{}
+	mr := &testutil.MockMatchRepo{}
+	memr := &testutil.MockMembershipRepo{}
+	sr := &testutil.MockSettlementRepo{}
+	h := newFriendlyHandler(fr, cr, mr, memr, sr)
+
+	ch := openChallenge()
+	acceptSetup(fr, cr, mr, memr, ch)
+	cr.On("FindByID", mock.Anything, ch.CompetitionID).Return(&competition.Competition{
+		ID:              ch.CompetitionID,
+		OrganizerTeamID: homeTeam,
+		VenueCost:       &competition.VenueCost{Amount: 0, Currency: "CLP"},
+	}, nil)
+
+	w, c := acceptRequest(ch)
+	h.Accept(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	sr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 }

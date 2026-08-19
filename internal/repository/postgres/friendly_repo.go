@@ -195,8 +195,15 @@ func (r *FriendlyRepository) LatestProposal(ctx context.Context, challengeID str
 	return p, nil
 }
 
-// AddProposal guarda la contraoferta y mueve el desafío a 'countered' en la
-// misma transacción: la propuesta nueva ES el cambio de estado.
+/*
+AddProposal guarda la contraoferta y mueve el desafío a 'countered' en la misma
+transacción: la propuesta nueva ES el cambio de estado.
+
+Y arrastra el plazo con ella. Contraofertar una fecha más cercana no puede dejar
+un vencimiento posterior al partido —la regla de `responseDeadline`, del otro
+lado del handler— así que el `LEAST` lo baja. Nunca lo sube: acá el plazo se
+acorta o se queda, y extenderlo sería regalarle tiempo al que contraoferta.
+*/
 func (r *FriendlyRepository) AddProposal(ctx context.Context, p *friendly.Proposal) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -218,9 +225,10 @@ func (r *FriendlyRepository) AddProposal(ctx context.Context, p *friendly.Propos
 	}
 
 	const updateStatus = `
-		UPDATE friendly_challenges SET status = 'countered'
+		UPDATE friendly_challenges
+		SET status = 'countered', expires_at = LEAST(expires_at, $2)
 		WHERE id = $1 AND status IN ('pending', 'countered')`
-	if _, err := tx.Exec(ctx, updateStatus, p.ChallengeID); err != nil {
+	if _, err := tx.Exec(ctx, updateStatus, p.ChallengeID, p.ProposedStartAt); err != nil {
 		return fmt.Errorf("friendly.AddProposal: status: %w", err)
 	}
 

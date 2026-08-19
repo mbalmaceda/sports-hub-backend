@@ -21,20 +21,27 @@ func NewMatchRepository(pool *pgxpool.Pool) *MatchRepository {
 }
 
 const matchColumns = `
-	id, competition_id, home_team_id, away_team_id, scheduled_at, venue, status, created_at`
+	id, competition_id, home_team_id, away_team_id, scheduled_at, venue, status,
+	home_score, away_score, result_recorded_at, result_recorded_by, created_at`
 
 func scanMatch(row pgx.Row) (*match.Match, error) {
 	m := &match.Match{}
 	var venue *string
+	var recordedBy *string
 	err := row.Scan(
 		&m.ID, &m.CompetitionID, &m.HomeTeamID, &m.AwayTeamID,
-		&m.ScheduledAt, &venue, &m.Status, &m.CreatedAt,
+		&m.ScheduledAt, &venue, &m.Status,
+		&m.HomeScore, &m.AwayScore, &m.ResultRecordedAt, &recordedBy,
+		&m.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if venue != nil {
 		m.Venue = *venue
+	}
+	if recordedBy != nil {
+		m.ResultRecordedBy = *recordedBy
 	}
 	return m, nil
 }
@@ -116,6 +123,35 @@ func (r *MatchRepository) UpdateStatus(ctx context.Context, id string, status ma
 		return fmt.Errorf("match.UpdateStatus: %w", err)
 	}
 	return nil
+}
+
+// SaveResult guarda el marcador y, en la misma sentencia, deja el partido en
+// `completed`: un partido con resultado es un partido jugado, y separarlo en
+// dos escrituras abre la puerta a que las dos cosas discrepen.
+//
+// Es un upsert de la fila que ya existe: volver a cargarlo corrige el marcador
+// anterior, que es lo que hace falta cuando alguien anotó un gol de menos.
+func (r *MatchRepository) SaveResult(ctx context.Context, id string, res match.Result) (*match.Match, error) {
+	q := `
+		UPDATE matches
+		SET home_score = $2,
+		    away_score = $3,
+		    result_recorded_at = $4,
+		    result_recorded_by = $5,
+		    status = $6
+		WHERE id = $1
+		RETURNING` + matchColumns
+	m, err := scanMatch(r.pool.QueryRow(ctx, q,
+		id, res.HomeScore, res.AwayScore, res.RecordedAt,
+		nullIfEmpty(res.RecordedBy), match.StatusCompleted,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, match.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("match.SaveResult: %w", err)
+	}
+	return m, nil
 }
 
 // ─── Convocatorias ───────────────────────────────────────────────────────────

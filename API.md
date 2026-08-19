@@ -231,6 +231,10 @@ son opcionales y viajan vacías si el alta no las pidió.
 ---
 
 ### PATCH `/teams/:id/fee-config`
+`fee_amount` en **0 apaga la cuota mensual**, y es un valor válido: el equipo que no cobra
+cuota deja de ver la pestaña de Cuotas en el móvil. Por eso el monto viaja como puntero del
+lado del servidor — con un `int64` a secas, el `required` de gin rechazaba el cero y la
+cuota no se podía desactivar nunca.
 **Body**
 ```json
 { "fee_amount": 15000, "fee_due_day": 10 }
@@ -612,6 +616,109 @@ cambio de fórmula alterara en silencio lo que ya se le cobró a la gente.
 Desde acá se sigue con lo que ya existe: convocar (`POST /matches/:matchId/callups`)
 y repartir el costo (`POST /teams/:id/charges` con
 `source: { "type": "match_cost", "id": "<competitionId>" }`).
+
+### PUT `/matches/:matchId/result`
+El marcador, que es lo que cierra el partido. Requiere rol `manager` en alguno de
+los dos equipos: los dos lo vieron, y esperar a que lo cargue uno solo deja la
+mitad de los encuentros sin resultado.
+
+```json
+{ "team_id": "uuid", "home_score": 3, "away_score": 2 }
+```
+
+Es un **upsert**: mandarlo de nuevo corrige el resultado en vez de agregar otro.
+Un marcador se anota de memoria un rato después del partido y equivocarse en un
+gol es normal.
+
+Guardarlo deja el partido en `completed`, en la misma sentencia. Y si a la
+competencia no le queda ningún partido sin resultado, pasa a `finished` — en un
+amistoso es inmediato, porque tiene uno solo.
+
+**Response 200** — el partido, ya con `home_score`, `away_score`,
+`result_recorded_at` y `result_recorded_by`.
+
+Todo partido trae esos cuatro campos, ausentes mientras nadie cargó el resultado.
+Ausente **no es** `0`: un empate sin goles es un resultado, y por eso los goles
+viajan como punteros y el 0 a 0 se acepta.
+
+**Response 400** `{ "error": "scores must be between 0 and 999" }` |
+`{ "error": "that team does not play this match" }`  
+**Response 409** `{ "error": "match has not been played yet" }` — antes de la hora
+de inicio no hay resultado que cargar. Es el mismo techo que ya usan los plazos
+de respuesta y los enlaces de invitado: nada de lo de antes del partido sobrevive
+al partido, y el marcador empieza justo ahí.  
+**Response 403** — no sos manager de ninguno de los dos equipos
+
+---
+
+## Liquidaciones entre equipos 🔒
+
+La mitad de la cancha que un equipo le transfiere al otro.
+
+El costo del lugar se reparte entre los que entran por los dos lados y cada
+equipo le cobra a los suyos —eso ya funcionaba— pero la cancha la reserva y la
+paga **uno solo**: el organizador. Sin este tramo, el rival cobraba sus $14.000
+y esa plata se quedaba en su cuenta, mientras el organizador terminaba cada
+amistoso $14.000 abajo.
+
+Es **una** transferencia entre managers, no catorce entre desconocidos.
+
+- **Deudor**: el equipo retado (`challenged_team_id`).
+- **Acreedor**: el que desafió, que es el organizador de la competencia.
+- **Monto**: la mitad del costo del lugar, redondeada hacia arriba — el mismo
+  `TeamShare` que usa el reparto, para que no quede un peso colgado.
+
+Nace al aceptarse el amistoso (`POST /friendlies/:challengeId/accept`), que es
+cuando el compromiso existe. Cancha gratis o partido interno no generan ninguna.
+
+```json
+{
+  "id": "uuid",
+  "source": { "type": "match_cost", "id": "<competitionId>" },
+  "from_team_id": "uuid",
+  "to_team_id": "uuid",
+  "amount": 14000,
+  "currency": "CLP",
+  "status": "pending",
+  "paid_at": null,
+  "created_at": "2026-08-12T18:30:00Z"
+}
+```
+
+### GET `/teams/:id/settlements`
+Las dos direcciones: lo que el equipo debe y lo que le deben. Requiere rol
+`manager` o `treasurer` — es plata del equipo, no la lee todo el plantel.
+
+### GET `/competitions/:competitionId/settlement`
+La deuda de un partido, para el balance. Mismo alcance que la competencia: la lee
+quien la juega.
+
+**Response 404** `{ "error": "this competition has no settlement between teams" }`
+— caso normal, no un error: cancha gratis o partido interno.
+
+### GET `/settlements/:settlementId/bank-account`
+A qué cuenta transferir: la del equipo que **cobra**. Requiere `manager` o
+`treasurer` del equipo que **debe**.
+
+Existe porque `GET /teams/:id/bank-account` exige ser de ese equipo y el rival
+justamente no lo es. Va por su propio endpoint y no adentro de la liquidación
+porque la liquidación se lista en el inicio, y datos bancarios en una respuesta
+de lista viajan cada vez que alguien abre la app.
+
+**Response 404** — el organizador todavía no cargó sus datos bancarios.
+
+### POST `/settlements/:settlementId/pay`
+El deudor declara la transferencia. Sin body. Requiere `manager` o `treasurer`
+del equipo que debe: **el acreedor no puede** cerrarla, y esa guarda es la que
+sostiene el modelo — acá nadie verifica nada, se le cree al que dice haber
+transferido.
+
+No pide comprobante a propósito: la app no tiene dónde guardar la imagen (ver la
+deuda técnica del comprobante en el CLAUDE.md del móvil), y pedir uno que se
+descarta sería repetir a sabiendas algo que ya no funciona.
+
+**Response 409** `{ "error": "this settlement was already paid" }`  
+**Response 403** — no manejás la plata del equipo que debe
 
 ---
 

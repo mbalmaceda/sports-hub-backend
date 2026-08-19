@@ -349,6 +349,149 @@ func (h *MatchHandler) RespondToCallup(c *gin.Context) {
 	c.JSON(http.StatusOK, callup)
 }
 
+/*
+SaveResult PUT /matches/:matchId/result
+
+Cierra el partido: el marcador. Lo carga el manager de cualquiera de los dos
+equipos —los dos lo vieron, y esperar a que lo cargue uno solo deja la mitad de
+los partidos sin resultado— y se puede corregir volviéndolo a mandar.
+
+Es la primera pieza de la métrica del partido. Todo lo que venga después —goles
+por jugador, tarjetas, minutos— entra por acá, colgado del partido y no de la
+competencia, porque un torneo tiene un estado y muchos resultados.
+*/
+func (h *MatchHandler) SaveResult(c *gin.Context) {
+	m, err := h.matches.FindByID(c.Request.Context(), c.Param("matchId"))
+	if errors.Is(err, match.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "match not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	/*
+		Los goles entran como punteros a propósito.
+
+		Con `int` a secas, un 0 es indistinguible de "no vino en el body", y
+		`binding:"required"` rechaza el cero: un 0 a 0 —que es un resultado
+		perfectamente normal— no se podría cargar. Es el mismo motivo por el que
+		`RespondToCallup` recibe `*bool`.
+	*/
+	var req struct {
+		TeamID    string `json:"team_id"    binding:"required"`
+		HomeScore *int   `json:"home_score" binding:"required"`
+		AwayScore *int   `json:"away_score" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !m.Involves(req.TeamID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "that team does not play this match"})
+		return
+	}
+	// El tope no es una regla del deporte, es la defensa contra el teclado
+	// numérico: sin él, un dedo apoyado en el 9 desborda el SMALLINT y el error
+	// que sale de Postgres no se puede traducir a nada que el manager entienda.
+	if *req.HomeScore < 0 || *req.AwayScore < 0 || *req.HomeScore > maxScore || *req.AwayScore > maxScore {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scores must be between 0 and 999"})
+		return
+	}
+
+	me, err := h.authz.requireRole(c, req.TeamID, membership.RoleManager)
+	if abortAuthz(c, err) {
+		return
+	}
+
+	/*
+		Antes del pitazo inicial no hay resultado que cargar.
+
+		Se mira la hora del partido y no su estado, por lo mismo que
+		`isCompetitionOver` del móvil: el estado lo mueve una persona y la fecha
+		se mueve sola. La hora de inicio es el corte porque es lo único que la
+		app sabe con certeza —cuándo termina no lo registra nadie— y porque es
+		el mismo techo que ya usan los plazos de respuesta y los enlaces de
+		invitado: nada de lo de antes del partido sobrevive al partido, y esto
+		es la primera cosa que empieza justo ahí.
+	*/
+	if time.Now().Before(m.ScheduledAt) {
+		c.JSON(http.StatusConflict, gin.H{"error": match.ErrNotPlayedYet.Error()})
+		return
+	}
+
+	updated, err := h.matches.SaveResult(c.Request.Context(), m.ID, match.Result{
+		HomeScore:  *req.HomeScore,
+		AwayScore:  *req.AwayScore,
+		RecordedBy: me.UserID,
+		RecordedAt: time.Now(),
+	})
+	if errors.Is(err, match.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "match not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save the result"})
+		return
+	}
+
+	h.closeCompetitionIfPlayed(c.Request.Context(), updated.CompetitionID)
+
+	c.JSON(http.StatusOK, updated)
+}
+
+// maxScore es el tope de goles que se aceptan por lado. Ver `SaveResult`.
+const maxScore = 999
+
+/*
+closeCompetitionIfPlayed da por terminada la competencia cuando ya no le queda
+ningún partido sin resultado.
+
+En un amistoso es inmediato —una competencia, un partido— y ahí está el cierre
+del ciclo: el encuentro deja de estar "activo" en la base y no solo por haberle
+pasado la fecha. En un torneo espera al último partido, que es lo correcto: un
+campeonato no termina porque se jugó la primera fecha.
+
+No devuelve error a propósito. El marcador ya está guardado, que es lo que el
+manager vino a hacer; fallar acá y devolverle un error lo dejaría cargándolo de
+nuevo. Y el móvil no depende de esto para repartir las tarjetas: `isCompetitionOver`
+mira también la fecha, así que una competencia que quedó `active` por un fallo
+acá cae igual en el Historial.
+*/
+func (h *MatchHandler) closeCompetitionIfPlayed(ctx context.Context, competitionID string) {
+	comp, err := h.competitions.FindByID(ctx, competitionID)
+	if err != nil {
+		slog.Error("could not read the competition to close it",
+			"error", err, "competition_id", competitionID)
+		return
+	}
+	// Cerrada o cancelada ya no se toca: reescribir el estado de una
+	// competencia cancelada la resucitaría como terminada.
+	if comp.Status != competition.StatusDraft && comp.Status != competition.StatusActive {
+		return
+	}
+
+	matches, err := h.matches.ListByCompetition(ctx, competitionID)
+	if err != nil {
+		slog.Error("could not list the matches to close the competition",
+			"error", err, "competition_id", competitionID)
+		return
+	}
+	for _, m := range matches {
+		// Un partido cancelado no espera resultado: no se jugó y no se va a
+		// jugar. Contarlo dejaría la competencia abierta para siempre.
+		if m.Status != match.StatusCancelled && !m.HasResult() {
+			return
+		}
+	}
+
+	if err := h.competitions.UpdateStatus(ctx, competitionID, competition.StatusFinished); err != nil {
+		slog.Error("could not close the competition",
+			"error", err, "competition_id", competitionID)
+	}
+}
+
 // syncMatchCharge deja el cargo del jugador acorde a lo que acaba de responder:
 // existe si va, y desaparece —solo si nadie lo pagó— si dijo que no.
 //

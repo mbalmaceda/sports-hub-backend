@@ -9,6 +9,7 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/friendly"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/settlement"
 )
 
 // --- CompetitionRepository ---
@@ -191,6 +192,14 @@ func (m *MockMatchRepo) UpdateStatus(ctx context.Context, id string, status matc
 	return m.Called(ctx, id, status).Error(0)
 }
 
+func (m *MockMatchRepo) SaveResult(ctx context.Context, id string, r match.Result) (*match.Match, error) {
+	args := m.Called(ctx, id, r)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*match.Match), args.Error(1)
+}
+
 func (m *MockMatchRepo) ListCallups(ctx context.Context, matchID string) ([]*match.Callup, error) {
 	args := m.Called(ctx, matchID)
 	if args.Get(0) == nil {
@@ -223,4 +232,56 @@ func (m *MockMatchRepo) Respond(
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*match.Callup), args.Error(1)
+}
+
+// ─── Liquidaciones entre equipos ─────────────────────────────────────────────
+
+type MockSettlementRepo struct{ mock.Mock }
+
+func (m *MockSettlementRepo) FindByID(ctx context.Context, id string) (*settlement.Settlement, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*settlement.Settlement), args.Error(1)
+}
+
+func (m *MockSettlementRepo) FindBySource(
+	ctx context.Context, source settlement.Source,
+) (*settlement.Settlement, error) {
+	args := m.Called(ctx, source)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*settlement.Settlement), args.Error(1)
+}
+
+func (m *MockSettlementRepo) ListByTeam(
+	ctx context.Context, teamID string,
+) ([]*settlement.Settlement, error) {
+	args := m.Called(ctx, teamID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*settlement.Settlement), args.Error(1)
+}
+
+func (m *MockSettlementRepo) Create(
+	ctx context.Context, s *settlement.Settlement,
+) (*settlement.Settlement, error) {
+	args := m.Called(ctx, s)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*settlement.Settlement), args.Error(1)
+}
+
+func (m *MockSettlementRepo) MarkPaid(
+	ctx context.Context, id, paidBy string, at time.Time,
+) (*settlement.Settlement, error) {
+	args := m.Called(ctx, id, paidBy, at)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*settlement.Settlement), args.Error(1)
 }
