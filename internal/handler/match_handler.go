@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,8 +14,9 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
-	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
 
 type MatchHandler struct {
@@ -22,7 +24,7 @@ type MatchHandler struct {
 	memberships   membership.Repository
 	competitions  competition.Repository
 	charges       charge.Repository
-	notifications *notification.Service
+	notifications *notify.Service
 	firebase      *firebase.Firebase
 	authz         teamAuthorizer
 	access        competitionAccess
@@ -33,7 +35,7 @@ func NewMatchHandler(
 	memberships membership.Repository,
 	competitions competition.Repository,
 	charges charge.Repository,
-	notifications *notification.Service,
+	notifications *notify.Service,
 	fb *firebase.Firebase,
 ) *MatchHandler {
 	return &MatchHandler{
@@ -276,12 +278,14 @@ func (h *MatchHandler) CallUp(c *gin.Context) {
 
 	// Es el aviso que más se espera de la app: hasta ahora había que perseguir
 	// uno por uno para saber quién va.
-	h.notifications.NotifyAsync(
-		userIDsForMemberships(members, req.MembershipIDs),
-		"Te convocaron",
-		"Estás citado para un partido. Toca para confirmar si vas.",
-		map[string]string{"type": "callup_created", "match_id": m.ID},
-	)
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:     req.TeamID,
+		Type:       notification.TypeMatchCallup,
+		EntityID:   m.ID,
+		Title:      "Te convocaron",
+		Body:       "Estás citado para un partido. Toca para confirmar si vas.",
+		Recipients: notify.To(userIDsForMemberships(members, req.MembershipIDs)...),
+	})
 
 	c.JSON(http.StatusCreated, callups)
 }
@@ -346,7 +350,88 @@ func (h *MatchHandler) RespondToCallup(c *gin.Context) {
 	// pasa a ser el recordatorio de los que lo dejaron para después.
 	h.syncMatchCharge(c.Request.Context(), m, req.TeamID, me.ID, *req.Attending)
 
+	actor, _ := currentUserID(c)
+	h.notifyCallupProgress(c.Request.Context(), m, req.TeamID, me.ID, actor, *req.Attending)
+
 	c.JSON(http.StatusOK, callup)
+}
+
+/*
+notifyCallupProgress le cuenta al manager cómo va la nómina.
+
+Es el único aviso que se colapsa, y la razón es la aritmética: un fútbol 7
+interno junta catorce personas, y una fila por respuesta le tapa al manager todo
+lo demás que pasó ese día. `TypeCallupResponses` mantiene una sola fila por
+partido y la reescribe con el recuento; `updated_at` la devuelve arriba de la
+lista cada vez.
+
+El push, en cambio, sale **solo cuando alguien se baja**. Es la asimetría que
+hace que el aviso valga: un "voy" no le pide nada al manager y ya se ve en el
+contador de la nómina; un "no voy" puede dejarlo con trece para un partido de
+catorce, y eso es lo que hay que interrumpirlo para contarle. El registro se
+actualiza igual en los dos casos —la lista queda al día— y lo que se decide acá
+es únicamente si además suena el teléfono.
+*/
+func (h *MatchHandler) notifyCallupProgress(
+	ctx context.Context, m *match.Match, teamID, membershipID, actorUserID string, attending bool,
+) {
+	if !h.notifications.Enabled() {
+		return
+	}
+
+	roster, err := h.memberships.ListByTeam(ctx, teamID)
+	if err != nil {
+		slog.Error("could not read the roster to count the call-up",
+			"error", err, "team_id", teamID)
+		return
+	}
+
+	callups, err := h.matches.ListCallups(ctx, m.ID)
+	if err != nil {
+		slog.Error("could not read the call-ups to count them",
+			"error", err, "match_id", m.ID)
+		return
+	}
+
+	// Solo los del equipo de quien respondió: en un amistoso los dos planteles
+	// cuelgan del mismo partido, y contarlos juntos le diría al manager que
+	// tiene el doble de gente de la que tiene.
+	own := make(map[string]bool, len(roster))
+	for _, member := range roster {
+		own[member.MembershipID] = true
+	}
+	confirmed, total := 0, 0
+	for _, cu := range callups {
+		if !own[cu.MembershipID] {
+			continue
+		}
+		total++
+		if cu.Status == match.CallupConfirmed {
+			confirmed++
+		}
+	}
+
+	who := personName(ctx, h.memberships, membershipID)
+	body := who + " se bajó. Van " + strconv.Itoa(confirmed) + " de " + strconv.Itoa(total) + " confirmados."
+	if attending {
+		body = who + " confirmó. Van " + strconv.Itoa(confirmed) + " de " + strconv.Itoa(total) + "."
+	}
+
+	// El manager que se marca a sí mismo no se avisa de su propio toque.
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:   teamID,
+		Type:     notification.TypeCallupResponses,
+		EntityID: m.ID,
+		Title:    "Respuestas a la citación",
+		Body:     body,
+		Silent:   attending,
+		// Una fila por partido que se reescribe con el recuento nuevo, y vuelve
+		// a marcarse sin leer: que el manager haya visto "8 de 14" no significa
+		// que ya sabe que ahora son 9.
+		DedupeKey:  notification.DedupeKey(string(notification.TypeCallupResponses), m.ID),
+		OnConflict: notification.ConflictRewrite,
+		Recipients: notify.To(managerIDs(ctx, h.memberships, teamID, actorUserID)...),
+	})
 }
 
 /*
@@ -437,6 +522,38 @@ func (h *MatchHandler) SaveResult(c *gin.Context) {
 	}
 
 	h.closeCompetitionIfPlayed(c.Request.Context(), updated.CompetitionID)
+
+	/*
+		A los managers de los DOS lados, menos el que lo cargó.
+
+		Lo carga cualquiera de los dos equipos, así que el otro se entera recién
+		acá: hasta que existió este aviso, el manager que no lo cargó tenía que
+		entrar a mirar para saber si el resultado ya estaba. Y el que lo escribió
+		no necesita que le cuenten lo que acaba de escribir.
+
+		En un partido interno los dos lados son el mismo equipo, y por eso el
+		segundo `EmitAsync` se saltea: mandarlo dos veces le dejaría al manager
+		dos filas idénticas del mismo marcador.
+	*/
+	if h.notifications.Enabled() {
+		ctx := c.Request.Context()
+		body := "El partido quedó " + strconv.Itoa(*req.HomeScore) +
+			" a " + strconv.Itoa(*req.AwayScore) + "."
+		sides := []string{updated.HomeTeamID}
+		if updated.AwayTeamID != updated.HomeTeamID {
+			sides = append(sides, updated.AwayTeamID)
+		}
+		for _, side := range sides {
+			h.notifications.EmitAsync(notify.Event{
+				TeamID:     side,
+				Type:       notification.TypeMatchResult,
+				EntityID:   updated.ID,
+				Title:      "Cargaron el resultado",
+				Body:       body,
+				Recipients: notify.To(managerIDs(ctx, h.memberships, side, me.UserID)...),
+			})
+		}
+	}
 
 	c.JSON(http.StatusOK, updated)
 }

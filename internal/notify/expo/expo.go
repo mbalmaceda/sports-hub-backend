@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
 
 const pushURL = "https://exp.host/--/api/v2/push/send"
@@ -34,11 +34,11 @@ type pushResponse struct {
 	} `json:"data"`
 }
 
-func (c *Client) Send(ctx context.Context, msg notification.Message) error {
-	return c.SendBatch(ctx, []notification.Message{msg})
+func (c *Client) Send(ctx context.Context, msg notify.Message) error {
+	return c.SendBatch(ctx, []notify.Message{msg})
 }
 
-func (c *Client) SendBatch(ctx context.Context, msgs []notification.Message) error {
+func (c *Client) SendBatch(ctx context.Context, msgs []notify.Message) error {
 	payload := make([]pushMessage, len(msgs))
 	for i, m := range msgs {
 		payload[i] = pushMessage{To: m.To, Title: m.Title, Body: m.Body, Data: m.Data}

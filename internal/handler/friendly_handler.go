@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -12,7 +13,10 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/friendly"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/settlement"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
 
 // challengeTTL es cuánto tiene el rival para responder antes de que la
@@ -28,7 +32,12 @@ type FriendlyHandler struct {
 	competitions competition.Repository
 	matches      match.Repository
 	settlements  settlement.Repository
-	authz        teamAuthorizer
+	// teams entra solo por las notificaciones: un aviso que dice el nombre del
+	// rival vale mucho más que "un equipo te desafió". Si no se puede leer, el
+	// aviso sale igual con el genérico.
+	teams         team.Repository
+	notifications *notify.Service
+	authz         teamAuthorizer
 }
 
 func NewFriendlyHandler(
@@ -37,42 +46,34 @@ func NewFriendlyHandler(
 	matches match.Repository,
 	memberships membership.Repository,
 	settlements settlement.Repository,
+	teams team.Repository,
+	notifications *notify.Service,
 ) *FriendlyHandler {
 	return &FriendlyHandler{
-		friendlies:   friendlies,
-		competitions: competitions,
-		matches:      matches,
-		settlements:  settlements,
-		authz:        teamAuthorizer{memberships: memberships},
+		friendlies:    friendlies,
+		competitions:  competitions,
+		matches:       matches,
+		settlements:   settlements,
+		teams:         teams,
+		notifications: notifications,
+		authz:         teamAuthorizer{memberships: memberships},
 	}
 }
 
 /*
-expireStale cierra lo que se pasó de plazo: el desafío queda 'expired' y su
-competencia, cancelada. Es exactamente lo que hace Decline, pero decidido por el
-reloj en vez de por una persona.
+otherSide devuelve el equipo del otro lado del desafío.
 
-Corre al leer porque no hay quién más lo corra. Lo que corresponde es un trabajo
-periódico; mientras no exista, esto alcanza: quien mira la lista es justamente
-quien necesita el estado al día, y una lectura que no barre deja el desafío en
-'pending' para siempre. La contracara es que nada expira hasta que alguien abra
-la app —si el equipo no entra, el estado guardado sigue viejo—.
-
-Los errores se tragan a propósito. La barrida es mantenimiento, no la respuesta:
-si falla, el cliente ve un estado viejo, que es exactamente lo que veía antes de
-que esto existiera. Voltear la lectura por eso sería cambiar un dato desactualizado
-por una pantalla de error.
+Existe porque en un amistoso no hay un "receptor" fijo: el desafío va y viene
+—retador propone, retado contraoferta, retador acepta— y quien recibe cada aviso
+es siempre el que no hizo la acción. Comparar contra `ChallengerTeamID` suelto
+por los handlers manda la notificación de vuelta a quien acaba de tocar el botón
+la mitad de las veces.
 */
-func (h *FriendlyHandler) expireStale(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	competitionIDs, err := h.friendlies.ExpireStale(ctx, time.Now())
-	if err != nil {
-		return
+func otherSide(ch *friendly.Challenge, actingTeamID string) string {
+	if ch.ChallengerTeamID == actingTeamID {
+		return ch.ChallengedTeamID
 	}
-	for _, id := range competitionIDs {
-		_ = h.competitions.UpdateStatus(ctx, id, competition.StatusCancelled)
-	}
+	return ch.ChallengerTeamID
 }
 
 // ListByTeam GET /teams/:id/friendlies
@@ -81,8 +82,6 @@ func (h *FriendlyHandler) ListByTeam(c *gin.Context) {
 	if _, err := h.authz.requireMember(c, teamID); abortAuthz(c, err) {
 		return
 	}
-
-	h.expireStale(c)
 
 	items, err := h.friendlies.ListByTeam(c.Request.Context(), teamID)
 	if err != nil {
@@ -97,8 +96,6 @@ func (h *FriendlyHandler) ListByTeam(c *gin.Context) {
 
 // GetByID GET /friendlies/:challengeId
 func (h *FriendlyHandler) GetByID(c *gin.Context) {
-	h.expireStale(c)
-
 	ch, err := h.friendlies.FindByID(c.Request.Context(), c.Param("challengeId"))
 	if errors.Is(err, friendly.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "friendly not found"})
@@ -193,6 +190,8 @@ func (h *FriendlyHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create friendly"})
 		return
 	}
+
+	h.announceChallenge(c.Request.Context(), ch, teamID, req.ChallengedTeamID)
 
 	c.JSON(http.StatusCreated, gin.H{"competition": comp, "challenge": ch, "proposal": first})
 }
@@ -325,13 +324,25 @@ func (h *FriendlyHandler) Counter(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+	actor, _ := currentUserID(c)
+	target := otherSide(ch, teamID)
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:     target,
+		Type:       notification.TypeFriendlyCountered,
+		EntityID:   ch.ID,
+		Title:      "Te propusieron otra fecha",
+		Body:       teamName(ctx, h.teams, teamID) + " contraofertó el amistoso. Toca para revisarla.",
+		Recipients: notify.To(managerIDs(ctx, h.authz.memberships, target, actor)...),
+	})
+
 	c.JSON(http.StatusCreated, p)
 }
 
 // Accept POST /friendlies/:challengeId/accept
 // Cierra la negociación y crea el partido confirmado con la última propuesta.
 func (h *FriendlyHandler) Accept(c *gin.Context) {
-	ch, _, ok := h.loadForResponse(c)
+	ch, actingTeamID, ok := h.loadForResponse(c)
 	if !ok {
 		return
 	}
@@ -427,13 +438,33 @@ func (h *FriendlyHandler) Accept(c *gin.Context) {
 			"error", err, "competition_id", ch.CompetitionID)
 	}
 
+	/*
+		El aviso apunta al PARTIDO y no al desafío, que es lo distinto de este.
+
+		Aceptar es el evento más consecuente de la app: fija la fecha, activa las
+		dos inscripciones y hace nacer la deuda de la mitad de la cancha. Lo que
+		el otro manager tiene que hacer a continuación es convocar, y eso se hace
+		en el partido; mandarlo al desafío ya cerrado sería dejarlo a un toque de
+		distancia de lo único que le queda por hacer.
+	*/
+	actor, _ := currentUserID(c)
+	h.announceResponse(c.Request.Context(), responseAnnouncement{
+		challenge:  ch,
+		actingTeam: actingTeamID,
+		actingUser: actor,
+		kind:       notification.TypeFriendlyAccepted,
+		entityID:   m.ID,
+		title:      "Aceptaron el amistoso",
+		suffix:     " confirmó el partido. Ya puedes armar la convocatoria.",
+	})
+
 	ch.Status = friendly.StatusAccepted
 	c.JSON(http.StatusOK, gin.H{"challenge": ch, "match": m})
 }
 
 // Decline POST /friendlies/:challengeId/decline
 func (h *FriendlyHandler) Decline(c *gin.Context) {
-	ch, _, ok := h.loadForResponse(c)
+	ch, actingTeamID, ok := h.loadForResponse(c)
 	if !ok {
 		return
 	}
@@ -443,6 +474,23 @@ func (h *FriendlyHandler) Decline(c *gin.Context) {
 		return
 	}
 	_ = h.competitions.UpdateStatus(c.Request.Context(), ch.CompetitionID, competition.StatusCancelled)
+
+	/*
+		Rechazar cancela la competencia, y con eso la tarjeta desaparece de
+		Activas del otro lado. Esta fila es el único rastro de por qué se esfumó:
+		sin ella, el manager que desafió ve que su partido ya no está y no tiene
+		dónde enterarse de que lo rechazaron.
+	*/
+	actor, _ := currentUserID(c)
+	h.announceResponse(c.Request.Context(), responseAnnouncement{
+		challenge:  ch,
+		actingTeam: actingTeamID,
+		actingUser: actor,
+		kind:       notification.TypeFriendlyDeclined,
+		entityID:   ch.ID,
+		title:      "Rechazaron el amistoso",
+		suffix:     " no va a poder esta vez.",
+	})
 
 	ch.Status = friendly.StatusDeclined
 	c.JSON(http.StatusOK, ch)
@@ -504,4 +552,49 @@ func (h *FriendlyHandler) loadForResponse(c *gin.Context) (*friendly.Challenge, 
 	}
 
 	return ch, actingTeamID, true
+}
+
+// announceChallenge avisa al rival que lo desafiaron. Va a los managers: el
+// desafío es una decisión del equipo, no de quien lo mire primero.
+func (h *FriendlyHandler) announceChallenge(ctx context.Context, ch *friendly.Challenge, from, to string) {
+	if !h.notifications.Enabled() {
+		return
+	}
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:   to,
+		Type:     notification.TypeFriendlyChallenged,
+		EntityID: ch.ID,
+		Title:    "Te desafiaron a un amistoso",
+		Body: teamName(ctx, h.teams, from) +
+			" quiere jugar contra ustedes. Toca para ver la propuesta.",
+		Recipients: notify.To(managerIDs(ctx, h.authz.memberships, to)...),
+	})
+}
+
+// responseAnnouncement son los datos de un aviso de respuesta a un desafío.
+// Los tres —contraoferta, aceptación y rechazo— tienen exactamente la misma
+// forma: van al lado que no tocó el botón y arrancan con el nombre del que sí.
+type responseAnnouncement struct {
+	challenge  *friendly.Challenge
+	actingTeam string
+	actingUser string
+	kind       notification.Type
+	entityID   string
+	title      string
+	suffix     string
+}
+
+func (h *FriendlyHandler) announceResponse(ctx context.Context, a responseAnnouncement) {
+	if !h.notifications.Enabled() {
+		return
+	}
+	target := otherSide(a.challenge, a.actingTeam)
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:     target,
+		Type:       a.kind,
+		EntityID:   a.entityID,
+		Title:      a.title,
+		Body:       teamName(ctx, h.teams, a.actingTeam) + a.suffix,
+		Recipients: notify.To(managerIDs(ctx, h.authz.memberships, target, a.actingUser)...),
+	})
 }

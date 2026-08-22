@@ -47,7 +47,7 @@ func newGuestHandler() (*handler.GuestHandler, *guestDeps) {
 		users:        &testutil.MockUserRepo{},
 	}
 	h := handler.NewGuestHandler(
-		d.invites, d.matches, d.memberships, d.competitions, d.charges, d.teams, d.users, nil,
+		d.invites, d.matches, d.memberships, d.competitions, d.charges, d.teams, d.users, nil, nil,
 		config.Config{PublicBaseURL: "https://zports.test"})
 	return h, d
 }
@@ -578,7 +578,7 @@ func TestCreateGuestInvite_NoURLWhenPublicBaseIsUnset(t *testing.T) {
 		users:        &testutil.MockUserRepo{},
 	}
 	h := handler.NewGuestHandler(
-		d.invites, d.matches, d.memberships, d.competitions, d.charges, d.teams, d.users, nil,
+		d.invites, d.matches, d.memberships, d.competitions, d.charges, d.teams, d.users, nil, nil,
 		config.Config{})
 
 	m := confirmedMatch()
@@ -863,7 +863,7 @@ func newCompetitionHandler() (*handler.CompetitionHandler, *testutil.MockCompeti
 	cr := &testutil.MockCompetitionRepo{}
 	memr := &testutil.MockMembershipRepo{}
 	mr := &testutil.MockMatchRepo{}
-	return handler.NewCompetitionHandler(cr, memr, mr), cr, memr, mr
+	return handler.NewCompetitionHandler(cr, memr, mr, nil, nil), cr, memr, mr
 }
 
 // Antes alcanzaba con tener sesión y el UUID para leer la competencia de

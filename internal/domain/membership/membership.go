@@ -127,3 +127,56 @@ type Repository interface {
 	*/
 	PromoteGuest(ctx context.Context, id string) error
 }
+
+/*
+ManagerUserIDs son los usuarios que manejan el equipo.
+
+La consulta del plantel queda del lado de quien llama —el handler la tiene
+cargada por otras razones, el trabajo periódico la pide aparte— y el criterio
+vive acá, que es donde vive todo lo demás sobre roles. Tenerlo escrito en los dos
+lugares es cómo se llega a que un aviso le llegue a alguien de más.
+
+`except` saca a quien causó el evento, y es la parte que más se olvida: el
+manager que carga el marcador no necesita enterarse de que se cargó el marcador.
+
+El filtro de invitados no es redundante aunque hoy ningún parche pueda ser
+manager: `kind` y `role` son ejes separados a propósito, y el día que un invitado
+tenga otro rol esto es lo que impide mandarle avisos del club al que no
+pertenece.
+*/
+func ManagerUserIDs(roster []*TeamMember, except ...string) []string {
+	return userIDsWhere(roster, func(m *TeamMember) bool { return m.Role == RoleManager }, except)
+}
+
+// MoneyHandlerUserIDs son los que ven la plata del equipo: manager y tesorero.
+//
+// Es un grupo más ancho que el anterior a propósito y solo para lo económico. El
+// tesorero existe justamente para que el manager no sea el único que mira los
+// cobros, y dejarlo afuera del aviso de un pago lo obligaría a entrar a revisar
+// si pasó algo.
+func MoneyHandlerUserIDs(roster []*TeamMember, except ...string) []string {
+	return userIDsWhere(roster, func(m *TeamMember) bool {
+		return m.Role == RoleManager || m.Role == RoleTreasurer
+	}, except)
+}
+
+func userIDsWhere(roster []*TeamMember, include func(*TeamMember) bool, except []string) []string {
+	excluded := make(map[string]struct{}, len(except))
+	for _, id := range except {
+		if id != "" {
+			excluded[id] = struct{}{}
+		}
+	}
+
+	userIDs := make([]string, 0, 4)
+	for _, m := range roster {
+		if m.Status != StatusActive || m.IsGuest() || !include(m) {
+			continue
+		}
+		if _, skip := excluded[m.UserID]; skip {
+			continue
+		}
+		userIDs = append(userIDs, m.UserID)
+	}
+	return userIDs
+}

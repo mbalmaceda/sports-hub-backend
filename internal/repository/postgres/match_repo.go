@@ -246,3 +246,43 @@ func (r *MatchRepository) Respond(
 	}
 	return cu, nil
 }
+
+/*
+PendingCallupsBefore son las citaciones sin responder de partidos que empiezan
+antes de `until`.
+
+Resuelve usuario y equipo en la misma consulta porque quien la llama es el
+trabajo periódico, que no está parado en ningún equipo: barre todos y necesita
+saber a quién avisarle sin dar una vuelta más por cada fila.
+
+El equipo sale de la membresía y no del partido, y ahí está el detalle que
+importa: en un amistoso los dos planteles cuelgan del mismo partido, así que
+tomar `home_team_id` le pondría a media lista el equipo del rival.
+*/
+func (r *MatchRepository) PendingCallupsBefore(
+	ctx context.Context, until, calledBefore time.Time,
+) ([]*match.PendingCallup, error) {
+	const q = `
+		SELECT c.match_id, m.team_id, m.user_id, mt.scheduled_at
+		FROM match_callups c
+		JOIN matches     mt ON mt.id = c.match_id
+		JOIN memberships m  ON m.id = c.membership_id
+		WHERE c.status = 'called'
+		  AND c.called_at < $2
+		  AND mt.status <> 'cancelled'
+		  AND mt.scheduled_at > NOW()
+		  AND mt.scheduled_at <= $1
+		  AND m.status = 'active'
+		ORDER BY mt.scheduled_at`
+	rows, err := r.pool.Query(ctx, q, until, calledBefore)
+	if err != nil {
+		return nil, fmt.Errorf("match.PendingCallupsBefore: %w", err)
+	}
+	defer rows.Close()
+
+	return collect(rows, func(row pgx.Row) (*match.PendingCallup, error) {
+		p := &match.PendingCallup{}
+		err := row.Scan(&p.MatchID, &p.TeamID, &p.UserID, &p.ScheduledAt)
+		return p, err
+	})
+}

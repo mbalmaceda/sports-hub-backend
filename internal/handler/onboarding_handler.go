@@ -11,17 +11,22 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/onboarding"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/user"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
-	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
 
 type OnboardingHandler struct {
-	onboarding    onboarding.Repository
-	teams         team.Repository
-	memberships   membership.Repository
-	notifications *notification.Service
+	onboarding  onboarding.Repository
+	teams       team.Repository
+	memberships membership.Repository
+	// users entra por un solo aviso: quien pide sumarse a un equipo todavía no
+	// tiene membresía ahí, así que su nombre no se puede sacar del plantel.
+	users         user.Repository
+	notifications *notify.Service
 	firebase      *firebase.Firebase
 	authz         teamAuthorizer
 }
@@ -30,17 +35,66 @@ func NewOnboardingHandler(
 	repo onboarding.Repository,
 	teams team.Repository,
 	memberships membership.Repository,
-	notifications *notification.Service,
+	users user.Repository,
+	notifications *notify.Service,
 	fb *firebase.Firebase,
 ) *OnboardingHandler {
 	return &OnboardingHandler{
 		onboarding:    repo,
 		teams:         teams,
 		memberships:   memberships,
+		users:         users,
 		notifications: notifications,
 		firebase:      fb,
 		authz:         teamAuthorizer{memberships: memberships},
 	}
+}
+
+// userName resuelve el nombre de alguien que todavía no es del equipo. Igual que
+// los otros resolutores de nombre: si no se puede leer, el aviso sale con un
+// genérico antes que no salir.
+func (h *OnboardingHandler) userName(ctx context.Context, userID string) string {
+	const unknown = "Alguien"
+	if h.users == nil {
+		return unknown
+	}
+	u, err := h.users.FindByID(ctx, userID)
+	if err != nil || u.Name == "" {
+		return unknown
+	}
+	return u.Name
+}
+
+/*
+announceJoin avisa que hay alguien nuevo en el plantel.
+
+Las dos puertas terminan acá —la invitación que la persona aceptó y la solicitud
+que el manager aprobó— porque para el resto del cuerpo técnico el hecho es el
+mismo: hay uno más. `except` es lo que las diferencia: en la solicitud, el
+manager que apretó "aceptar" no necesita que le avisen de lo que acaba de hacer.
+
+Apunta a la membresía recién creada, que es la ficha del jugador. Si no se puede
+leer, no se manda nada: un aviso sin destino en un flujo donde el destino es todo
+el contenido —"mira quién entró"— no vale la interrupción.
+*/
+func (h *OnboardingHandler) announceJoin(ctx context.Context, teamID, userID string, except ...string) {
+	if !h.notifications.Enabled() {
+		return
+	}
+	m, err := h.memberships.FindByUserAndTeam(ctx, userID, teamID)
+	if err != nil {
+		slog.Error("could not read the new membership to announce it",
+			"error", err, "team_id", teamID, "user_id", userID)
+		return
+	}
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:     teamID,
+		Type:       notification.TypePlayerJoined,
+		EntityID:   m.ID,
+		Title:      "Se sumó al equipo",
+		Body:       h.userName(ctx, userID) + " ya es parte del plantel.",
+		Recipients: notify.To(managerIDs(ctx, h.memberships, teamID, except...)...),
+	})
 }
 
 // syncMirror refleja en Firestore la membresía que acaba de nacer al aceptar una
@@ -193,20 +247,27 @@ func (h *OnboardingHandler) InvitePerson(c *gin.Context) {
 		return
 	}
 
-	// Para quien todavía no tiene equipo, esta es la única notificación que le
-	// puede llegar, así que vale la pena nombrar al equipo en vez de un aviso
-	// genérico. Si no se puede leer el nombre se manda igual: el aviso importa
-	// más que el detalle.
-	body := "Un equipo te invitó a sumarte. Toca para responder."
-	if t, err := h.teams.FindByID(c.Request.Context(), teamID); err == nil {
-		body = t.Name + " te invitó a sumarte. Toca para responder."
+	/*
+		Para quien todavía no tiene equipo, esta es la única notificación que le
+		puede llegar, así que vale la pena nombrar al equipo en vez de un aviso
+		genérico.
+
+		Ojo con el destinatario: no es miembro de este equipo ni de ninguno. La
+		pantalla a la que lleva tiene que cargar sin equipo activo —igual que la
+		del parche— porque si cayera en la pestaña de Competencia se encontraría
+		con el estado de "todavía no tienes equipo" en vez de con su invitación.
+	*/
+	if h.notifications.Enabled() {
+		ctx := c.Request.Context()
+		h.notifications.EmitAsync(notify.Event{
+			TeamID:     teamID,
+			Type:       notification.TypeTeamInvitation,
+			EntityID:   inv.ID,
+			Title:      "Te invitaron a un equipo",
+			Body:       teamName(ctx, h.teams, teamID) + " te invitó a sumarte. Toca para responder.",
+			Recipients: notify.To(req.UserID),
+		})
 	}
-	h.notifications.NotifyAsync(
-		[]string{req.UserID},
-		"Te invitaron a un equipo",
-		body,
-		map[string]string{"type": "team_invitation", "invitation_id": inv.ID},
-	)
 
 	c.JSON(http.StatusCreated, inv)
 }
@@ -255,6 +316,7 @@ func (h *OnboardingHandler) RespondToInvitation(c *gin.Context) {
 	// Solo si aceptó: rechazar no crea membresía y no hay nada que reflejar.
 	if *req.Accept {
 		h.syncMirror(c.Request.Context(), inv.TeamID, inv.UserID)
+		h.announceJoin(c.Request.Context(), inv.TeamID, inv.UserID)
 	}
 
 	c.JSON(http.StatusOK, updated)
@@ -315,6 +377,22 @@ func (h *OnboardingHandler) RequestToJoin(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "you already have a pending request for this team"})
 		return
 	}
+
+	// La puerta espejo de la invitación, y la que más falta hacía: hasta acá una
+	// solicitud se quedaba esperando hasta que al manager se le ocurriera entrar
+	// a mirar, con una persona del otro lado esperando respuesta.
+	if h.notifications.Enabled() {
+		ctx := c.Request.Context()
+		h.notifications.EmitAsync(notify.Event{
+			TeamID:     teamID,
+			Type:       notification.TypeJoinRequested,
+			EntityID:   request.ID,
+			Title:      "Quieren sumarse al equipo",
+			Body:       h.userName(ctx, userID) + " pidió entrar. Toca para responder.",
+			Recipients: notify.To(managerIDs(ctx, h.memberships, teamID)...),
+		})
+	}
+
 	c.JSON(http.StatusCreated, request)
 }
 
@@ -358,6 +436,9 @@ func (h *OnboardingHandler) RespondToJoinRequest(c *gin.Context) {
 
 	if *req.Accept {
 		h.syncMirror(c.Request.Context(), request.TeamID, request.UserID)
+		// El que aprobó queda afuera: acaba de hacerlo, no necesita que se lo
+		// cuenten. El resto del cuerpo técnico sí.
+		h.announceJoin(c.Request.Context(), request.TeamID, request.UserID, userID)
 	}
 
 	c.JSON(http.StatusOK, updated)

@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -12,7 +14,8 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/funds"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
-	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
 
 type ChargeHandler struct {
@@ -21,7 +24,7 @@ type ChargeHandler struct {
 	matches       match.Repository
 	memberships   membership.Repository
 	funds         funds.Repository
-	notifications *notification.Service
+	notifications *notify.Service
 	authz         teamAuthorizer
 }
 
@@ -31,7 +34,7 @@ func NewChargeHandler(
 	matches match.Repository,
 	memberships membership.Repository,
 	funds funds.Repository,
-	notifications *notification.Service,
+	notifications *notify.Service,
 ) *ChargeHandler {
 	return &ChargeHandler{
 		charges:       charges,
@@ -257,14 +260,38 @@ func (h *ChargeHandler) Split(c *gin.Context) {
 		return
 	}
 
-	// Se avisa después de guardar y sin esperar el envío: el reparto ya está
-	// hecho y que Expo tarde o falle no cambia nada de lo anterior.
-	h.notifications.NotifyAsync(
-		userIDsForMemberships(members, payers),
-		"Nuevo cobro",
-		"Se repartió el costo de la cancha. Toca para ver tu parte.",
-		map[string]string{"type": "charge_created", "team_id": teamID},
-	)
+	/*
+		Se avisa después de guardar y sin esperar el envío: el reparto ya está
+		hecho y que Expo tarde o falle no cambia nada de lo anterior.
+
+		Este es el único flujo donde cada destinatario va a un lado distinto: el
+		cobro es de cada uno, y mandarlos a todos al mismo id sería llevarlos al
+		cargo de otro. De acá salió que `Recipient` cargue su propio EntityID en
+		vez de que el evento tenga uno solo para el grupo.
+
+		Ojo con lo que NO notifica: el cargo también nace cuando el jugador
+		confirma la citación (`syncMatchCharge`) y cuando un parche canjea el
+		enlace. Esos dos no avisan a propósito —sería mandarle "nuevo cobro" a
+		alguien por un cargo que creó su propio toque, en la misma pantalla donde
+		acaba de tocar—. El aviso es de esta acción del manager: repartir.
+	*/
+	userByMembership := make(map[string]string, len(members))
+	for _, m := range members {
+		userByMembership[m.MembershipID] = m.UserID
+	}
+	recipients := make([]notify.Recipient, 0, len(charges))
+	for _, ch := range charges {
+		if userID, ok := userByMembership[ch.MembershipID]; ok {
+			recipients = append(recipients, notify.Recipient{UserID: userID, EntityID: ch.ID})
+		}
+	}
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:     teamID,
+		Type:       notification.TypeChargeCreated,
+		Title:      "Nuevo cobro",
+		Body:       "Se repartió el costo de la cancha. Toca para ver tu parte.",
+		Recipients: recipients,
+	})
 
 	c.JSON(http.StatusCreated, gin.H{
 		"charges":    charges,
@@ -357,7 +384,60 @@ func (h *ChargeHandler) SubmitReceipt(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not submit the receipt"})
 		return
 	}
+
+	h.notifyPaymentReceived(c.Request.Context(), updated, me)
+
 	c.JSON(http.StatusOK, updated)
+}
+
+/*
+notifyPaymentReceived le avisa al que maneja la plata que alguien pagó.
+
+El título es "Pago recibido" y no "comprobante enviado" porque eso es lo que
+pasó: mandar el comprobante deja el cargo en `paid` en el acto y nadie lo
+revisa. Un aviso que dijera "revisa este comprobante" prometería una acción que
+la app no tiene.
+
+Y lleva al PARTIDO, no al cobro. No existe `GET /charges/:id` —la pantalla del
+cargo resuelve buscando dentro de la lista del propio jugador— así que un manager
+que llegara ahí vería "este cobro ya no está". Su vista sobre los cobros es la
+sección del partido, que además le muestra el reparto entero y no solo el que
+acaba de entrar.
+
+Va al manager y al tesorero: el tesorero existe justamente para que el manager no
+sea el único que mira la plata.
+*/
+func (h *ChargeHandler) notifyPaymentReceived(
+	ctx context.Context, ch *charge.Charge, payer *membership.Membership,
+) {
+	if !h.notifications.Enabled() || ch.Source.Type != charge.SourceMatchCost {
+		return
+	}
+	matches, err := h.matches.ListByCompetition(ctx, ch.Source.ID)
+	if err != nil {
+		slog.Error("could not read the match to announce the payment",
+			"error", err, "competition_id", ch.Source.ID)
+		return
+	}
+	var target *match.Match
+	for _, m := range matches {
+		if m.Status != match.StatusCancelled && m.Involves(ch.TeamID) {
+			target = m
+			break
+		}
+	}
+	if target == nil {
+		return
+	}
+
+	h.notifications.EmitAsync(notify.Event{
+		TeamID:     ch.TeamID,
+		Type:       notification.TypePaymentReceived,
+		EntityID:   target.ID,
+		Title:      "Pago recibido",
+		Body:       personName(ctx, h.memberships, payer.ID) + " pagó su parte de la cancha.",
+		Recipients: notify.To(moneyHandlerIDs(ctx, h.memberships, ch.TeamID, payer.UserID)...),
+	})
 }
 
 // Confirm POST /charges/:chargeId/confirm

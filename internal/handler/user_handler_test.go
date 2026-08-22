@@ -228,41 +228,6 @@ func TestUpdateProfile_InvalidDominantSide(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestRegisterPushToken_Success(t *testing.T) {
-	repo := &testutil.MockUserRepo{}
-	h := handler.NewUserHandler(repo)
-
-	expoToken := "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]"
-	repo.On("UpdatePushToken", mock.Anything, "user-1", expoToken).Return(nil)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	contextWithClaims(c, "user-1")
-	body, _ := json.Marshal(map[string]string{"token": expoToken})
-	c.Request = httptest.NewRequest(http.MethodPut, "/users/me/push-token", strings.NewReader(string(body)))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	h.RegisterPushToken(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	repo.AssertCalled(t, "UpdatePushToken", mock.Anything, "user-1", expoToken)
-}
-
-func TestRegisterPushToken_MissingToken(t *testing.T) {
-	h := handler.NewUserHandler(&testutil.MockUserRepo{})
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	contextWithClaims(c, "user-1")
-	c.Request = httptest.NewRequest(http.MethodPut, "/users/me/push-token",
-		strings.NewReader(`{}`))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	h.RegisterPushToken(c)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
 func TestDeleteAccount_Success(t *testing.T) {
 	repo := &testutil.MockUserRepo{}
 	h := handler.NewUserHandler(repo)

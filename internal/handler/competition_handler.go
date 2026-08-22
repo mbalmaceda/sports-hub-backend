@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -10,6 +11,9 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
 
 // invitationTTL es cuánto vive una invitación a competencia sin respuesta.
@@ -20,20 +24,26 @@ import (
 const invitationTTL = 7 * 24 * time.Hour
 
 type CompetitionHandler struct {
-	competitions competition.Repository
-	authz        teamAuthorizer
-	access       competitionAccess
+	competitions  competition.Repository
+	teams         team.Repository
+	notifications *notify.Service
+	authz         teamAuthorizer
+	access        competitionAccess
 }
 
 func NewCompetitionHandler(
 	competitions competition.Repository,
 	memberships membership.Repository,
 	matches match.Repository,
+	teams team.Repository,
+	notifications *notify.Service,
 ) *CompetitionHandler {
 	authz := teamAuthorizer{memberships: memberships}
 	return &CompetitionHandler{
-		competitions: competitions,
-		authz:        authz,
+		competitions:  competitions,
+		teams:         teams,
+		notifications: notifications,
+		authz:         authz,
 		// El repositorio de partidos entra solo por esto: la regla de acceso
 		// necesita saber si un invitado tiene convocatoria a alguno de los
 		// partidos de la competencia.
@@ -201,6 +211,22 @@ func (h *CompetitionHandler) Invite(c *gin.Context) {
 		return
 	}
 
+	// El nombre de la competencia es lo que hace decidible el aviso: "te
+	// invitaron a la Liga de Verano" se contesta sin abrir nada, "te invitaron a
+	// una competencia" obliga a entrar a averiguar a cuál.
+	ctx := c.Request.Context()
+	if h.notifications.Enabled() {
+		h.notifications.EmitAsync(notify.Event{
+			TeamID:   req.ToTeamID,
+			Type:     notification.TypeTournamentInvited,
+			EntityID: comp.ID,
+			Title:    "Te invitaron a una competencia",
+			Body: teamName(ctx, h.teams, comp.OrganizerTeamID) +
+				" los invitó a " + comp.Name + ". Toca para responder.",
+			Recipients: notify.To(managerIDs(ctx, h.authz.memberships, req.ToTeamID)...),
+		})
+	}
+
 	c.JSON(http.StatusCreated, inv)
 }
 
@@ -211,12 +237,17 @@ func (h *CompetitionHandler) ListInvitations(c *gin.Context) {
 		return
 	}
 
-	// Vencer al leer, igual que con los amistosos: nadie más lo hace, y una
-	// invitación con el plazo cumplido no puede seguir figurando como abierta
-	// —responderla ya devuelve 409—. Si la barrida falla se sigue igual: lo
-	// peor es devolver el estado viejo.
-	_ = h.competitions.ExpireStaleInvitations(c.Request.Context(), time.Now())
+	/*
+		Acá corría la barrida de invitaciones vencidas, una actualización de
+		tabla completa por cada listado. Ahora la hace el trabajo periódico
+		(`internal/jobs`), que además la corre aunque nadie abra la app: antes,
+		si el equipo no entraba, en Postgres la invitación seguía 'sent' para
+		siempre y cualquier consulta que no pasara por acá veía estado viejo.
 
+		Lo que sostiene sacarla de la lectura es que el vencimiento no depende de
+		esta escritura: el móvil lo deriva con `isInvitationExpired` y responder
+		una vencida devuelve 409 igual, mire lo que mire la columna.
+	*/
 	invitations, err := h.competitions.ListInvitationsForTeam(c.Request.Context(), teamID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list invitations"})
@@ -270,5 +301,37 @@ func (h *CompetitionHandler) RespondToInvitation(c *gin.Context) {
 		return
 	}
 
+	// Al organizador, que es el que está esperando para armar el fixture. El
+	// texto dice la respuesta completa: si solo dijera "respondieron", el
+	// manager tendría que entrar para saber si tiene un equipo más o uno menos.
+	if h.notifications.Enabled() {
+		ctx := c.Request.Context()
+		actor, _ := currentUserID(c)
+		answer := "no va a participar en "
+		if *req.Accept {
+			answer = "se suma a "
+		}
+		h.notifications.EmitAsync(notify.Event{
+			TeamID:   inv.FromTeamID,
+			Type:     notification.TypeTournamentAnswered,
+			EntityID: inv.CompetitionID,
+			Title:    "Respondieron tu invitación",
+			Body: teamName(ctx, h.teams, inv.ToTeamID) + " " + answer +
+				competitionName(ctx, h.competitions, inv.CompetitionID) + ".",
+			Recipients: notify.To(managerIDs(ctx, h.authz.memberships, inv.FromTeamID, actor)...),
+		})
+	}
+
 	c.JSON(http.StatusOK, updated)
+}
+
+// competitionName resuelve el nombre para el texto del aviso. Igual que
+// `teamName`: si no se puede leer, el aviso sale con un genérico antes que no
+// salir.
+func competitionName(ctx context.Context, competitions competition.Repository, id string) string {
+	comp, err := competitions.FindByID(ctx, id)
+	if err != nil || comp.Name == "" {
+		return "la competencia"
+	}
+	return comp.Name
 }

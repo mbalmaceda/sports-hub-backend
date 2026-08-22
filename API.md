@@ -1094,8 +1094,129 @@ valida el dígito verificador (**400** si no cuadra) y un RUT ya tomado devuelve
 
 ---
 
+## Notificaciones 🔒
+
+El historial de novedades de una persona. Todo es **del usuario del token**: no
+hay parámetro de a quién, y ese es el control de acceso entero.
+
+Las notificaciones **no se crean por API** salvo el aviso al plantel: las emite
+el backend como efecto de las acciones que ya existen (desafiar, convocar,
+repartir un cobro). La fila y el push salen del mismo lugar, en el mismo paso.
+
+### GET `/me/notifications?limit=50`
+Las novedades y cuántas quedan sin leer. Ordenadas por `updated_at` descendente.
+`limit` por defecto 50, tope 200.
+
+**Response 200**
+```json
+{
+  "notifications": [
+    {
+      "id": "uuid",
+      "recipient_user_id": "uuid",
+      "team_id": "uuid",
+      "type": "friendly_challenged",
+      "entity_id": "uuid",
+      "title": "Te desafiaron a un amistoso",
+      "body": "Los Halcones quiere jugar contra ustedes. Toca para ver la propuesta.",
+      "read_at": null,
+      "created_at": "2026-08-21T22:39:26Z",
+      "updated_at": "2026-08-21T22:39:26Z"
+    }
+  ],
+  "unread": 1
+}
+```
+
+`entity_id` es a qué apunta; **qué cosa es lo dice `type`**. Ausente es una
+notificación que solo informa y no navega (hoy solo `announcement`). El destino
+lo resuelve la app en `notificationRoute`: acá nunca viaja un path, porque las
+filas quedan guardadas y un path escrito en Postgres se rompe al renombrar una
+pantalla.
+
+`updated_at` es lo que se muestra y por lo que se ordena. Coincide con
+`created_at` salvo en `callup_responses`, que reescribe su fila.
+
+**Tipos y a qué apuntan**
+
+| `type` | `entity_id` | Quién lo recibe |
+|---|---|---|
+| `friendly_challenged` | desafío | managers del equipo retado |
+| `friendly_countered` | desafío | managers del lado que no contraofertó |
+| `friendly_accepted` | **partido** | managers del otro lado |
+| `friendly_declined` | desafío | managers del otro lado |
+| `tournament_invited` | competencia | managers del equipo invitado |
+| `tournament_answered` | competencia | managers del organizador |
+| `match_callup` | partido | cada convocado |
+| `callup_responses` | partido | managers — **una fila por partido, reescrita** |
+| `match_result` | partido | managers de los dos lados, menos quien lo cargó |
+| `charge_created` | **cobro de cada uno** | los que pagan |
+| `payment_received` | **partido** | manager y tesorero |
+| `team_invitation` | invitación | la persona invitada (todavía sin equipo) |
+| `join_requested` | solicitud | managers |
+| `player_joined` | membresía | managers, menos quien aprobó |
+| `guest_joined` | partido | managers |
+| `announcement` | **ninguno** | el plantel, menos quien lo escribió |
+| `match_reminder` | partido | los citados que no contestaron — **lo dispara el reloj** |
+| `fee_overdue` | **membresía del que debe** | manager y tesorero — **lo dispara el reloj** |
+| `monthly_summary` | **ninguno** | manager y tesorero — **lo dispara el reloj** |
+
+`charge_created` es el único donde **cada destinatario recibe un `entity_id`
+distinto**: el cobro es de cada uno.
+
+**Las tres que dispara el reloj** las emite un trabajo periódico
+(`internal/jobs`) y no una acción de nadie, así que no tienen endpoint. Se
+mandan una sola vez gracias a `dedupe_key`, no gracias al horario: un cron en
+proceso no tiene memoria entre reinicios, y la clave sí. Ver la tabla de abajo.
+
+| Aviso | Cuándo corre | Se manda una vez por |
+|---|---|---|
+| `match_reminder` | cada 15 min | persona y partido |
+| `fee_overdue` | 09:00 diario | persona y período de cuota |
+| `monthly_summary` | 09:00 del día 1 | equipo y mes |
+
+Los horarios se leen en `America/Santiago`, no en la zona del proceso: un aviso
+de cuota impaga a las tres de la mañana es la forma más rápida de que alguien
+apague las notificaciones. En la misma tanda corre la barrida de lo vencido
+(desafíos e invitaciones), que antes vivía dentro de cada `GET` y por lo tanto
+no corría si nadie abría la app.
+
+`fee_overdue` va a quien maneja la plata y no al que debe, y es a propósito: hoy
+el jugador no tiene pantalla donde ver su cuota mensual, así que el aviso lo
+llevaría a un lugar que no puede abrir.
+
+### POST `/notifications/:notificationId/read`
+Marca una como leída. Idempotente.
+
+**Response 204** — también cuando la notificación no existe o es de otro:
+distinguirlos convertiría el endpoint en una forma de averiguar qué ids existen.
+
+### POST `/me/notifications/read-all`
+**Response 200** `{ "marked": 7 }`
+
+### POST `/teams/:id/announcements` — manager
+El aviso al plantel. Es la única notificación que nace de un toque en la app, y
+la única sin destino: el mensaje es todo el contenido.
+
+**Body**
+```json
+{ "message": "Mañana entrenamos a las 20:00." }
+```
+
+**Response 200** `{ "sent": 12 }` — a cuántas personas les llegó.
+**Response 400** si viene vacío o pasa los 500 caracteres.
+
+A diferencia del resto, este espera el envío en vez de despacharlo en segundo
+plano: el manager está mirando la pantalla para saber si salió.
+
 ### PUT `/users/me/push-token`
-Registra el token de Expo Push Notifications para este dispositivo. Llamar al iniciar la app o cuando el token cambia.
+Registra el token de Expo Push para **este dispositivo**. La app la llama en
+cada arranque con sesión.
+
+Una cuenta puede tener varios (`push_tokens` es tabla propia desde la migración
+007; antes era una columna en `users` y entrar en un segundo teléfono dejaba el
+primero mudo). Si el token ya existía asociado a otra cuenta se reasigna: el
+aparato es de quien lo está usando ahora.
 
 **Body**
 ```json
@@ -1104,10 +1225,11 @@ Registra el token de Expo Push Notifications para este dispositivo. Llamar al in
 
 **Response 200** `{ "status": "ok" }`
 
----
+**Payload del push**
 
-## Próximos endpoints
+```json
+{ "type": "friendly_challenged", "entity_id": "uuid", "notification_id": "uuid" }
+```
 
-- `POST /teams/:id/notifications` — broadcast announcement a todos los miembros
-- `GET /users/me/notifications` — notificaciones recibidas
-- `PATCH /notifications/:id/read` — marcar como leída
+`notification_id` va para que tocar el push marque leída la misma fila que
+tocarla en la lista.

@@ -111,23 +111,3 @@ func (h *UserHandler) DeleteAccount(c *gin.Context) {
 
 	c.Status(http.StatusNoContent)
 }
-
-// RegisterPushToken PUT /users/me/push-token
-func (h *UserHandler) RegisterPushToken(c *gin.Context) {
-	claims, _ := auth.ClaimsFromContext(c)
-
-	var req struct {
-		Token string `json:"token" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	if err := h.repo.UpdatePushToken(c.Request.Context(), claims.UserID, req.Token); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not register push token"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}

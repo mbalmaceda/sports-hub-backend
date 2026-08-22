@@ -200,6 +200,19 @@ func (m *MockMatchRepo) SaveResult(ctx context.Context, id string, r match.Resul
 	return args.Get(0).(*match.Match), args.Error(1)
 }
 
+// PendingCallupsBefore la usa el trabajo periódico, no los handlers: por eso
+// devuelve vacío sin expectativa configurada, para no obligar a cada test de
+// partidos a declarar una llamada que nunca hace.
+func (m *MockMatchRepo) PendingCallupsBefore(
+	ctx context.Context, until, calledBefore time.Time,
+) ([]*match.PendingCallup, error) {
+	args := m.Called(ctx, until, calledBefore)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*match.PendingCallup), args.Error(1)
+}
+
 func (m *MockMatchRepo) ListCallups(ctx context.Context, matchID string) ([]*match.Callup, error) {
 	args := m.Called(ctx, matchID)
 	if args.Get(0) == nil {

@@ -18,9 +18,10 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/db"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
+	"github.com/mbalmaceda/sports-hub-backend/internal/jobs"
 	"github.com/mbalmaceda/sports-hub-backend/internal/middleware"
-	"github.com/mbalmaceda/sports-hub-backend/internal/notification"
-	"github.com/mbalmaceda/sports-hub-backend/internal/notification/expo"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify/expo"
 	"github.com/mbalmaceda/sports-hub-backend/internal/repository/postgres"
 )
 
@@ -64,10 +65,13 @@ func main() {
 	onboardingRepo := postgres.NewOnboardingRepository(pool)
 	guestInviteRepo := postgres.NewGuestInviteRepository(pool)
 	settlementRepo := postgres.NewSettlementRepository(pool)
+	notificationRepo := postgres.NewNotificationRepository(pool)
+	pushTokenRepo := postgres.NewPushTokenRepository(pool)
 
-	// Notifier. Los tokens de push viven en la tabla de usuarios, así que el
-	// repositorio de usuarios es el que sabe a qué dispositivos escribir.
-	notifications := notification.NewService(expo.New(), userRepo, slog.Default())
+	// Emisión de novedades: escribe el registro y manda el push, en ese orden y
+	// en la misma llamada. Son el mismo hecho contado dos veces —una que queda y
+	// una que interrumpe— y separarlos deja que la lista y la bandeja discrepen.
+	notifications := notify.NewService(expo.New(), notificationRepo, pushTokenRepo, slog.Default())
 
 	// Firebase es opcional: sin credencial el backend arranca igual y solo queda
 	// fuera lo que depende de Firestore.
@@ -85,6 +89,26 @@ func main() {
 
 	// Limpieza periódica de refresh tokens vencidos.
 	auth.StartTokenReaper(ctx, tokenRepo, slog.Default())
+
+	/*
+		Lo que pasa porque pasó el tiempo: la barrida de lo vencido y los tres
+		avisos que dispara el reloj.
+
+		La barrida vivía adentro de cada GET, así que nada expiraba si nadie
+		abría la app; los avisos directamente no existían. Que el scheduler no
+		tenga memoria entre reinicios no es problema: lo que garantiza que un
+		aviso salga una sola vez es `dedupe_key` en Postgres, no el horario.
+	*/
+	stopJobs := jobs.Start(ctx, jobs.Deps{
+		Friendlies:    friendlyRepo,
+		Competitions:  competitionRepo,
+		Matches:       matchRepo,
+		Fees:          feeRepo,
+		Teams:         teamRepo,
+		Memberships:   rosterRepo,
+		Notifications: notifications,
+	}, slog.Default())
+	defer stopJobs()
 
 	// Limitadores. Están en memoria y son exactos mientras Fly corra una sola
 	// máquina; con varias, el límite efectivo se multiplica por la cantidad.
@@ -121,18 +145,22 @@ func main() {
 	rosterHandler := handler.NewRosterHandler(rosterRepo, firebaseAuth)
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
-	competitionHandler := handler.NewCompetitionHandler(competitionRepo, rosterRepo, matchRepo)
+	competitionHandler := handler.NewCompetitionHandler(
+		competitionRepo, rosterRepo, matchRepo, teamRepo, notifications)
 	friendlyHandler := handler.NewFriendlyHandler(
-		friendlyRepo, competitionRepo, matchRepo, rosterRepo, settlementRepo)
+		friendlyRepo, competitionRepo, matchRepo, rosterRepo, settlementRepo, teamRepo, notifications)
 	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, competitionRepo, chargeRepo, notifications, firebaseAuth)
 	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo, notifications)
 	expenseHandler := handler.NewExpenseHandler(expenseRepo, competitionRepo, rosterRepo)
 	settlementHandler := handler.NewSettlementHandler(
 		settlementRepo, competitionRepo, matchRepo, rosterRepo, teamRepo)
-	onboardingHandler := handler.NewOnboardingHandler(onboardingRepo, teamRepo, rosterRepo, notifications, firebaseAuth)
+	onboardingHandler := handler.NewOnboardingHandler(
+		onboardingRepo, teamRepo, rosterRepo, userRepo, notifications, firebaseAuth)
 	guestHandler := handler.NewGuestHandler(
-		guestInviteRepo, matchRepo, rosterRepo, competitionRepo, chargeRepo, teamRepo, userRepo, firebaseAuth, cfg)
+		guestInviteRepo, matchRepo, rosterRepo, competitionRepo, chargeRepo, teamRepo, userRepo,
+		firebaseAuth, notifications, cfg)
 	appLinksHandler := handler.NewAppLinksHandler(guestInviteRepo, cfg)
+	notificationHandler := handler.NewNotificationHandler(notificationRepo, pushTokenRepo, rosterRepo, notifications)
 
 	// Router
 	r := gin.New()
@@ -209,7 +237,20 @@ func main() {
 		protected.GET("/users/me", userHandler.Me)
 		protected.PATCH("/users/me", userHandler.UpdateProfile)
 		protected.DELETE("/users/me", userHandler.DeleteAccount)
-		protected.PUT("/users/me/push-token", userHandler.RegisterPushToken)
+		// El registro del dispositivo cuelga del handler de notificaciones desde
+		// que los tokens son tabla propia: dejó de ser un dato del perfil. La
+		// ruta no cambió —la app la llama en cada arranque—.
+		protected.PUT("/users/me/push-token", notificationHandler.RegisterPushToken)
+
+		// ── Novedades ──
+		// Personales, no del equipo: quien juega en dos clubes las ve juntas, y
+		// quien todavía no tiene equipo —el recién invitado— también las tiene.
+		protected.GET("/me/notifications", notificationHandler.List)
+		protected.POST("/me/notifications/read-all", notificationHandler.MarkAllRead)
+		protected.POST("/notifications/:notificationId/read", notificationHandler.MarkRead)
+		// El aviso del manager al plantel: la única notificación que nace de un
+		// toque en la app, y la única sin pantalla a la que llevar.
+		protected.POST("/teams/:id/announcements", notificationHandler.Announce)
 
 		// Cambia la sesión de ZPORTS por una de Firebase, para que la app pueda
 		// leer Firestore en vivo sin dejar de ser este backend quien autentica.

@@ -25,7 +25,7 @@ const userColumns = `
 	COALESCE(tax_id,''), COALESCE(phone,''), COALESCE(avatar_url,''),
 	COALESCE(favorite_sport,''), height_cm, weight_kg, birth_date,
 	COALESCE(alias,''), COALESCE(city,''), COALESCE(dominant_side,''), COALESCE(bio,''),
-	COALESCE(push_token,''), password_hash,
+	password_hash,
 	created_at, updated_at`
 
 func scanUser(row pgx.Row) (*user.User, error) {
@@ -35,7 +35,7 @@ func scanUser(row pgx.Row) (*user.User, error) {
 		&u.TaxID, &u.Phone, &u.AvatarURL,
 		&u.FavoriteSport, &u.HeightCm, &u.WeightKg, &u.BirthDate,
 		&u.Alias, &u.City, &u.DominantSide, &u.Bio,
-		&u.PushToken, &u.PasswordHash,
+		&u.PasswordHash,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
 	return u, err
@@ -135,43 +135,6 @@ func (r *UserRepository) UpdateProfile(ctx context.Context, userID string, upd u
 	return nil
 }
 
-func (r *UserRepository) UpdatePushToken(ctx context.Context, userID, token string) error {
-	const q = `UPDATE users SET push_token = $1, updated_at = NOW() WHERE id = $2`
-	_, err := r.pool.Exec(ctx, q, token, userID)
-	if err != nil {
-		return fmt.Errorf("user.UpdatePushToken: %w", err)
-	}
-	return nil
-}
-
-// PushTokensByUserIDs devuelve los tokens de push de esos usuarios, saltándose
-// a quien no tenga (nunca abrió la app en un teléfono, o negó el permiso) y a
-// las cuentas borradas. Que alguien no aparezca en el resultado es normal, no un
-// error: notificar es best-effort.
-func (r *UserRepository) PushTokensByUserIDs(ctx context.Context, userIDs []string) ([]string, error) {
-	if len(userIDs) == 0 {
-		return nil, nil
-	}
-
-	const q = `
-		SELECT push_token FROM users
-		WHERE id = ANY($1)
-		  AND push_token IS NOT NULL
-		  AND push_token <> ''
-		  AND deleted_at IS NULL`
-	rows, err := r.pool.Query(ctx, q, userIDs)
-	if err != nil {
-		return nil, fmt.Errorf("user.PushTokensByUserIDs: %w", err)
-	}
-	defer rows.Close()
-
-	tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("user.PushTokensByUserIDs: %w", err)
-	}
-	return tokens, nil
-}
-
 // Delete anonimiza la cuenta en vez de borrar la fila (ver migración 014) y de
 // paso corta las sesiones abiertas. Va todo en una transacción: una cuenta a
 // medio borrar es peor que una no borrada.
@@ -203,7 +166,6 @@ func (r *UserRepository) Delete(ctx context.Context, id string) error {
 			city           = NULL,
 			dominant_side  = NULL,
 			bio            = NULL,
-			push_token     = NULL,
 			deleted_at     = NOW(),
 			updated_at     = NOW()
 		WHERE id = $1 AND deleted_at IS NULL`
@@ -220,6 +182,13 @@ func (r *UserRepository) Delete(ctx context.Context, id string) error {
 	// Sin esto la sesión sobrevive al borrado: el refresh token dura días.
 	if _, err := tx.Exec(ctx, `DELETE FROM refresh_tokens WHERE user_id = $1`, id); err != nil {
 		return fmt.Errorf("user.Delete refresh_tokens: %w", err)
+	}
+
+	// Y sin esto le seguirían llegando push al teléfono de una cuenta que ya no
+	// existe. Antes lo cubría el `push_token = NULL` del anonimizado; desde que
+	// los dispositivos son tabla propia hay que borrarlos acá.
+	if _, err := tx.Exec(ctx, `DELETE FROM push_tokens WHERE user_id = $1`, id); err != nil {
+		return fmt.Errorf("user.Delete push_tokens: %w", err)
 	}
 
 	// La membresía no se borra: de ella cuelgan las cuotas y los cobros ya

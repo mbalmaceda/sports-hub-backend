@@ -18,9 +18,11 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/guest"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/user"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
 
 // tokenBytes son 32 bytes = 256 bits de entropía.
@@ -37,16 +39,17 @@ const tokenBytes = 32
 const maxGuestsPerInvite = 11
 
 type GuestHandler struct {
-	invites      guest.Repository
-	matches      match.Repository
-	memberships  membership.Repository
-	competitions competition.Repository
-	charges      charge.Repository
-	teams        team.Repository
-	users        user.Repository
-	firebase     *firebase.Firebase
-	cfg          config.Config
-	authz        teamAuthorizer
+	invites       guest.Repository
+	matches       match.Repository
+	memberships   membership.Repository
+	competitions  competition.Repository
+	charges       charge.Repository
+	teams         team.Repository
+	users         user.Repository
+	firebase      *firebase.Firebase
+	notifications *notify.Service
+	cfg           config.Config
+	authz         teamAuthorizer
 }
 
 func NewGuestHandler(
@@ -58,19 +61,21 @@ func NewGuestHandler(
 	teams team.Repository,
 	users user.Repository,
 	fb *firebase.Firebase,
+	notifications *notify.Service,
 	cfg config.Config,
 ) *GuestHandler {
 	return &GuestHandler{
-		invites:      invites,
-		matches:      matches,
-		memberships:  memberships,
-		competitions: competitions,
-		charges:      charges,
-		teams:        teams,
-		users:        users,
-		firebase:     fb,
-		cfg:          cfg,
-		authz:        teamAuthorizer{memberships: memberships},
+		invites:       invites,
+		matches:       matches,
+		memberships:   memberships,
+		competitions:  competitions,
+		charges:       charges,
+		teams:         teams,
+		users:         users,
+		firebase:      fb,
+		notifications: notifications,
+		cfg:           cfg,
+		authz:         teamAuthorizer{memberships: memberships},
 	}
 }
 
@@ -361,6 +366,30 @@ func (h *GuestHandler) Accept(c *gin.Context) {
 		Kind:    string(membership.KindGuest),
 		MatchID: result.MatchID,
 	})
+
+	/*
+		Al manager: se llenó un lugar de la nómina.
+
+		Es el aviso que cierra el enlace de invitados. El manager comparte la URL
+		por WhatsApp y hasta acá no tenía cómo saber quién la usó salvo entrando
+		a mirar la convocatoria; con esto se entera de que ya son catorce sin
+		perseguir a nadie.
+
+		Va al partido y no al plantel: el parche no es del club, y su ficha en el
+		equipo no existe como tal. Lo que el manager quiere ver es la nómina.
+	*/
+	if h.notifications.Enabled() {
+		ctx := c.Request.Context()
+		h.notifications.EmitAsync(notify.Event{
+			TeamID:   result.TeamID,
+			Type:     notification.TypeGuestJoined,
+			EntityID: result.MatchID,
+			Title:    "Se sumó un invitado",
+			Body: personName(ctx, h.memberships, result.MembershipID) +
+				" entró por el enlace y ya está confirmado.",
+			Recipients: notify.To(managerIDs(ctx, h.memberships, result.TeamID)...),
+		})
+	}
 
 	c.JSON(http.StatusOK, result)
 }

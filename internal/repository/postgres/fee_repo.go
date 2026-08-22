@@ -132,3 +132,44 @@ func (r *FeeRepository) UpdateStatus(ctx context.Context, id string, status fee.
 func collectObligations(rows pgx.Rows) ([]*fee.Obligation, error) {
 	return collect(rows, scanObligation)
 }
+
+/*
+ListOverdue son las cuotas impagas cuyo vencimiento ya pasó, de todos los
+equipos.
+
+Los dos filtros del final no son de más. `fee_amount > 0` deja afuera a los
+equipos que no cobran cuota mensual —donde un "no pagó" sería falso: no es que
+nadie pagó, es que no hay nada que pagar— y `kind <> 'guest'` a los invitados,
+que juegan un partido y no pertenecen al club.
+
+Mira `status = 'pending'` y la fecha, no `status = 'overdue'`: nadie mueve ese
+estado solo, así que esperar a que alguien lo marque sería no avisar nunca.
+*/
+func (r *FeeRepository) ListOverdue(ctx context.Context, on time.Time) ([]*fee.Overdue, error) {
+	const q = `
+		SELECT o.id, o.team_id, o.membership_id, u.name,
+		       o.period_year, o.period_month, o.amount, o.currency
+		FROM fee_obligations o
+		JOIN memberships m ON m.id = o.membership_id
+		JOIN users       u ON u.id = m.user_id
+		JOIN teams       t ON t.id = o.team_id
+		WHERE o.status = 'pending'
+		  AND o.due_date < $1::date
+		  AND m.status = 'active'
+		  AND m.kind <> 'guest'
+		  AND t.fee_amount > 0
+		  AND u.deleted_at IS NULL
+		ORDER BY o.team_id, o.due_date`
+	rows, err := r.pool.Query(ctx, q, on)
+	if err != nil {
+		return nil, fmt.Errorf("fee.ListOverdue: %w", err)
+	}
+	defer rows.Close()
+
+	return collect(rows, func(row pgx.Row) (*fee.Overdue, error) {
+		o := &fee.Overdue{}
+		err := row.Scan(&o.ObligationID, &o.TeamID, &o.MembershipID, &o.FullName,
+			&o.PeriodYear, &o.PeriodMonth, &o.Amount, &o.Currency)
+		return o, err
+	})
+}

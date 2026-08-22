@@ -1,7 +1,6 @@
 package handler_test
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -68,7 +67,7 @@ func newFriendlyHandler(
 	if len(sr) > 0 {
 		settlements = sr[0]
 	}
-	return handler.NewFriendlyHandler(fr, cr, mr, memr, settlements)
+	return handler.NewFriendlyHandler(fr, cr, mr, memr, settlements, nil, nil)
 }
 
 // El equipo que hizo la última propuesta no puede aceptarla. Sin este chequeo
@@ -239,10 +238,9 @@ func TestCreateFriendly_RejectsSelfChallenge(t *testing.T) {
 	cr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 }
 
-// Listar los amistosos del equipo vence lo que se pasó de plazo y cancela su
-// competencia. Es lo único que lo hace: sin un trabajo periódico, si la lectura
-// no barre, el desafío se queda en 'pending' para siempre.
-func TestListFriendlies_ExpiresStaleAndCancelsCompetition(t *testing.T) {
+// La lectura ya no barre nada: eso lo hace el trabajo periódico
+// (`internal/jobs`), y sus pruebas viven ahí. Listar es solo listar.
+func TestListFriendlies_DoesNotSweepOnRead(t *testing.T) {
 	fr := &testutil.MockFriendlyRepo{}
 	cr := &testutil.MockCompetitionRepo{}
 	mr := &testutil.MockMatchRepo{}
@@ -251,34 +249,6 @@ func TestListFriendlies_ExpiresStaleAndCancelsCompetition(t *testing.T) {
 
 	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
 		Return(managerOf(homeTeam, "user-home"), nil)
-	fr.On("ExpireStale", mock.Anything, mock.Anything).Return([]string{"comp-1"}, nil)
-	cr.On("UpdateStatus", mock.Anything, "comp-1", competition.StatusCancelled).Return(nil)
-	fr.On("ListByTeam", mock.Anything, homeTeam).Return([]*friendly.Challenge{}, nil)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-home")
-	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
-	c.Request = httptest.NewRequest(http.MethodGet, "/teams/"+homeTeam+"/friendlies", nil)
-
-	h.ListByTeam(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	cr.AssertExpectations(t)
-}
-
-// Si la barrida falla, la lectura sigue: el peor caso es devolver un estado
-// viejo, no una pantalla de error.
-func TestListFriendlies_SweepFailureDoesNotBreakTheRead(t *testing.T) {
-	fr := &testutil.MockFriendlyRepo{}
-	cr := &testutil.MockCompetitionRepo{}
-	mr := &testutil.MockMatchRepo{}
-	memr := &testutil.MockMembershipRepo{}
-	h := newFriendlyHandler(fr, cr, mr, memr)
-
-	memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
-		Return(managerOf(homeTeam, "user-home"), nil)
-	fr.On("ExpireStale", mock.Anything, mock.Anything).Return(nil, errors.New("boom"))
 	fr.On("ListByTeam", mock.Anything, homeTeam).Return([]*friendly.Challenge{openChallenge()}, nil)
 
 	w := httptest.NewRecorder()
@@ -291,6 +261,7 @@ func TestListFriendlies_SweepFailureDoesNotBreakTheRead(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "ch-1")
+	fr.AssertNotCalled(t, "ExpireStale", mock.Anything, mock.Anything)
 	cr.AssertNotCalled(t, "UpdateStatus", mock.Anything, mock.Anything, mock.Anything)
 }
 

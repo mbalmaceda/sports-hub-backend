@@ -80,7 +80,6 @@ type User struct {
 	City          string    `json:"city,omitempty"`
 	DominantSide  string    `json:"dominant_side,omitempty"`
 	Bio           string    `json:"bio,omitempty"`
-	PushToken     string    `json:"-"`
 	PasswordHash  string    `json:"-"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -117,7 +116,6 @@ type Repository interface {
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	Create(ctx context.Context, u *User) error
 	UpdateProfile(ctx context.Context, userID string, update ProfileUpdate) error
-	UpdatePushToken(ctx context.Context, userID, token string) error
 	// Delete borra la cuenta desde el punto de vista de quien la borra: sus datos
 	// personales dejan de existir y no puede volver a entrar. Por dentro la fila
 	// se anonimiza en vez de borrarse, para no arrastrar el historial contable de

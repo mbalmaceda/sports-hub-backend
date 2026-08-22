@@ -94,6 +94,15 @@ type Callup struct {
 	RespondedAt  *time.Time   `json:"responded_at,omitempty"`
 }
 
+// PendingCallup es una citación sin responder, con lo que hace falta para
+// avisarle a esa persona sin volver a consultar nada.
+type PendingCallup struct {
+	MatchID     string
+	TeamID      string
+	UserID      string
+	ScheduledAt time.Time
+}
+
 type Repository interface {
 	FindByID(ctx context.Context, id string) (*Match, error)
 	ListByCompetition(ctx context.Context, competitionID string) ([]*Match, error)
@@ -115,6 +124,22 @@ type Repository interface {
 		dejarlos en dos escrituras abre la puerta a que discrepen.
 	*/
 	SaveResult(ctx context.Context, id string, r Result) (*Match, error)
+
+	/*
+		PendingCallupsBefore son las citaciones sin responder de partidos que
+		empiezan antes de `until`.
+
+		Es la consulta del recordatorio de la víspera, y devuelve el usuario y el
+		equipo ya resueltos porque quien la usa no tiene con qué resolverlos: el
+		trabajo periódico no está mirando ningún equipo en particular, barre
+		todos.
+
+		`calledBefore` deja afuera al que acaba de ser citado. Sin ese corte,
+		alguien convocado el sábado a la mañana para el sábado a la tarde recibe
+		"te convocaron" y, quince minutos después, "tu partido es mañana": dos
+		avisos de lo mismo con el segundo diciendo una fecha equivocada.
+	*/
+	PendingCallupsBefore(ctx context.Context, until, calledBefore time.Time) ([]*PendingCallup, error)
 
 	ListCallups(ctx context.Context, matchID string) ([]*Callup, error)
 	ListCallupsByMembership(ctx context.Context, membershipID string) ([]*Callup, error)

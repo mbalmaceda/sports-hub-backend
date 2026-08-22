@@ -42,10 +42,6 @@ func (m *MockUserRepo) UpdateProfile(ctx context.Context, userID string, upd use
 	return m.Called(ctx, userID, upd).Error(0)
 }
 
-func (m *MockUserRepo) UpdatePushToken(ctx context.Context, userID, token string) error {
-	return m.Called(ctx, userID, token).Error(0)
-}
-
 func (m *MockUserRepo) Delete(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
@@ -179,6 +175,14 @@ func (m *MockMembershipRepo) UpdateRole(ctx context.Context, id string, role mem
 // --- FeeRepository ---
 
 type MockFeeRepo struct{ mock.Mock }
+
+func (m *MockFeeRepo) ListOverdue(ctx context.Context, on time.Time) ([]*fee.Overdue, error) {
+	args := m.Called(ctx, on)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*fee.Overdue), args.Error(1)
+}
 
 func (m *MockFeeRepo) FindByID(ctx context.Context, id string) (*fee.Obligation, error) {
 	args := m.Called(ctx, id)
