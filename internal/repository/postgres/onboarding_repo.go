@@ -253,10 +253,26 @@ func (r *OnboardingRepository) RespondToJoinRequest(
 	// solicitudes aceptadas sin jugador en el plantel, que es la clase de
 	// inconsistencia que después nadie sabe cómo reparar.
 	if accept {
+		/*
+			El `kind` es la mitad que hace que entrar al club sea entrar.
+
+			Hay una sola membresía por persona y equipo (`UNIQUE (user_id,
+			team_id)`), así que cuando el que entra es un parche del mismo
+			club esto no inserta: cae en el `ON CONFLICT` sobre la fila que ya
+			existe. Sin subir el `kind` ahí, la solicitud quedaba aceptada y la
+			persona seguía siendo invitada para siempre —sin plantel, sin
+			finanzas y con las pestañas escondidas—, que es peor que el error
+			que devolvía antes porque no avisa.
+
+			Y que sea la misma fila es lo correcto, no una limitación: la
+			convocatoria, el cobro de la cancha y la asistencia de aquel
+			sábado cuelgan de ese `membership_id`. Promoverla se lleva puesto
+			ese historial al club; abrir una segunda lo dejaría huérfano.
+		*/
 		const addMember = `
 			INSERT INTO memberships (user_id, team_id, role, status)
 			VALUES ($1, $2, 'player', 'active')
-			ON CONFLICT (user_id, team_id) DO UPDATE SET status = 'active'`
+			ON CONFLICT (user_id, team_id) DO UPDATE SET status = 'active', kind = 'member'`
 		if _, err := tx.Exec(ctx, addMember, req.UserID, req.TeamID); err != nil {
 			return nil, fmt.Errorf("onboarding.RespondToJoinRequest: membership: %w", err)
 		}
@@ -300,10 +316,13 @@ func (r *OnboardingRepository) resolve(ctx context.Context, in resolveInput) (*o
 	}
 
 	if in.accept {
+		// Sube el `kind` por lo mismo que al aceptar una solicitud: el
+		// invitado a un partido que acepta entrar al club deja de ser
+		// invitado. Ver el comentario en `RespondToJoinRequest`.
 		const addMember = `
 			INSERT INTO memberships (user_id, team_id, role, status)
 			VALUES ($1, $2, 'player', 'active')
-			ON CONFLICT (user_id, team_id) DO UPDATE SET status = 'active'`
+			ON CONFLICT (user_id, team_id) DO UPDATE SET status = 'active', kind = 'member'`
 		if _, err := tx.Exec(ctx, addMember, inv.UserID, inv.TeamID); err != nil {
 			return nil, fmt.Errorf("onboarding.resolve: membership: %w", err)
 		}

@@ -118,7 +118,30 @@ func (h *OnboardingHandler) syncMirror(ctx context.Context, teamID, userID strin
 		UserID: m.UserID,
 		Role:   string(m.Role),
 		Status: string(m.Status),
+		// Va explícito porque acá puede llegar un parche recién promovido, y
+		// su documento en Firestore todavía dice `kind: 'guest'` con el
+		// `matchId` que lo encierra en ese partido. `SyncMembership` escribe
+		// con `Set`, así que mandar el kind de Postgres es lo que lo suelta.
+		Kind: string(m.Kind),
 	})
+}
+
+/*
+¿Esta persona ya es del club?
+
+No es lo mismo que tener una membresía en él, y confundirlos es lo que
+tenía trabado al parche: el invitado TIENE una membresía en el equipo al
+que vino a jugar —es un `membership_id`, así se le cobra la cancha y se le
+guarda la convocatoria— y justamente por eso `FindByUserAndTeam` lo
+encontraba y las dos puertas de entrada al club le contestaban "ya sos
+miembro". No lo es: es el que más cerca está de querer serlo.
+
+La pregunta se contesta acá y no comparando el campo suelto en cada
+handler, por lo mismo que `IsGuest` existe en el dominio.
+*/
+func (h *OnboardingHandler) belongsToTeam(ctx context.Context, userID, teamID string) bool {
+	m, err := h.memberships.FindByUserAndTeam(ctx, userID, teamID)
+	return err == nil && !m.IsGuest()
 }
 
 // FindPerson GET /people/lookup?method=tax_id&value=12.345.678-9
@@ -228,8 +251,10 @@ func (h *OnboardingHandler) InvitePerson(c *gin.Context) {
 	}
 
 	// Invitar a alguien que ya está adentro no tiene sentido y confundiría al
-	// manager con una invitación que nunca se va a responder.
-	if _, err := h.memberships.FindByUserAndTeam(c.Request.Context(), req.UserID, teamID); err == nil {
+	// manager con una invitación que nunca se va a responder. Al parche sí se
+	// lo puede invitar, y es el caso que más importa: el manager acaba de
+	// verlo jugar, que es el mejor momento que va a haber para sumarlo.
+	if h.belongsToTeam(c.Request.Context(), req.UserID, teamID) {
 		c.JSON(http.StatusConflict, gin.H{"error": onboarding.ErrAlreadyMember.Error()})
 		return
 	}
@@ -357,7 +382,9 @@ func (h *OnboardingHandler) RequestToJoin(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "team not found"})
 		return
 	}
-	if _, err := h.memberships.FindByUserAndTeam(c.Request.Context(), userID, teamID); err == nil {
+	// El parche puede pedir entrar al club en el que jugó: tiene membresía ahí
+	// pero no pertenece. Ver `belongsToTeam`.
+	if h.belongsToTeam(c.Request.Context(), userID, teamID) {
 		c.JSON(http.StatusConflict, gin.H{"error": onboarding.ErrAlreadyMember.Error()})
 		return
 	}
