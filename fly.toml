@@ -46,7 +46,11 @@ primary_region = 'gru'
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  # El cron de `internal/jobs` corre dentro de este mismo proceso. Con el piso en
+  # 0 la máquina se apaga sin tráfico y el scheduler deja de existir: el aviso de
+  # cuotas de las 9:00 no sale si nadie entró a esa hora. `auto_start_machines`
+  # despierta con una request entrante, pero nada la despierta por horario.
+  min_machines_running = 1
   processes = ['app']
 
   # Sin check, Fly manda tráfico a la máquina aunque el proceso esté colgado.

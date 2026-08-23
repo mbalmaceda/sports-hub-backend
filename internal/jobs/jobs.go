@@ -178,26 +178,76 @@ func Start(ctx context.Context, deps Deps, logger *slog.Logger) func() {
 	}
 
 	c := cron.New(cron.WithLocation(location))
+
+	// El EntryID de cada trabajo, para poder preguntarle al cron cuándo vuelve a
+	// correr. Se guarda en vez de descartarlo porque `Entry(id).Next` es la
+	// única forma de confirmar desde afuera que la expresión se leyó como
+	// queríamos: "0 9 * * *" mal interpretada no falla al registrarse, falla
+	// nueve horas después y en silencio.
+	ids := make(map[string]cron.EntryID, len(all))
 	for _, j := range all {
-		if _, err := c.AddFunc(j.spec, runner(ctx, deps, logger, j)); err != nil {
+		id, err := c.AddFunc(j.spec, runner(ctx, deps, logger, j))
+		if err != nil {
 			// Una expresión mal escrita es un error de programación, no de
 			// entorno: se registra y los demás trabajos arrancan igual.
 			logger.Error("invalid cron expression", "job", j.name, "spec", j.spec, "error", err)
+			continue
 		}
+		ids[j.name] = id
 	}
 	c.Start()
 
-	go runOnce(ctx, deps, logger, all[0])
+	/*
+		El inventario de lo que quedó agendado, con la hora real de la próxima
+		corrida de cada uno.
+
+		Va después de `Start` y no adentro del loop de arriba porque `Next` recién
+		queda poblado cuando el cron arranca; consultado antes devuelve el cero de
+		`time.Time` y el registro diría "0001-01-01" para los cuatro.
+
+		Sin estas líneas, un arranque sano y uno donde el scheduler no levantó se
+		ven idénticos en los logs, y la diferencia recién aparece cuando alguien
+		nota que no le llegó un aviso.
+	*/
+	for _, j := range all {
+		id, ok := ids[j.name]
+		if !ok {
+			continue
+		}
+		logger.Info("scheduled job registered",
+			"job", j.name,
+			"spec", j.spec,
+			"next_run", c.Entry(id).Next.In(location).Format(time.RFC3339))
+	}
+	logger.Info("scheduler started", "zone", location.String(), "jobs", len(ids))
+
+	go runOnce(ctx, deps, logger, all[0], triggerStartup)
 
 	return func() {
+		logger.Info("scheduler stopping")
 		// Stop espera a que terminen las corridas en curso, que es lo que hace
 		// falta para no cortar una barrida a la mitad al apagar el servidor.
 		<-c.Stop().Done()
+		logger.Info("scheduler stopped")
 	}
 }
 
+/*
+Qué disparó una corrida.
+
+La barrida es el único trabajo que corre por dos motivos —el reloj y el arranque
+del proceso, ver `Start`— y en los logs son dos hechos distintos: un
+`sweep-expired` de arranque a las 09:03 es un despliegue, uno agendado a las 09:03
+no existe. Sin esta distinción, una máquina reiniciándose en loop parece un cron
+sano corriendo seguido.
+*/
+const (
+	triggerSchedule = "schedule"
+	triggerStartup  = "startup"
+)
+
 func runner(ctx context.Context, deps Deps, logger *slog.Logger, j job) func() {
-	return func() { runOnce(ctx, deps, logger, j) }
+	return func() { runOnce(ctx, deps, logger, j, triggerSchedule) }
 }
 
 // runOnce corre un trabajo con su propio corte de tiempo.
@@ -206,11 +256,32 @@ func runner(ctx context.Context, deps Deps, logger *slog.Logger, j job) func() {
 // no puede impedir la próxima corrida. Reintentar tampoco hace falta —la próxima
 // pasada vuelve a encontrar lo mismo— y esa es otra cosa que la deduplicación
 // vuelve gratis: reintentar no puede duplicar nada.
-func runOnce(ctx context.Context, deps Deps, logger *slog.Logger, j job) {
+//
+// Las dos líneas que enmarcan la corrida son lo que vuelve legible el flujo desde
+// afuera. La de apertura existe para el caso en que no haya cierre: si la máquina
+// se queda sin memoria a mitad de una barrida, el `started` sin su `finished` es
+// el único rastro que queda de qué estaba haciendo el proceso cuando murió. La de
+// cierre lleva la duración porque un trabajo que empieza a tardar de más es lo
+// que avisa que una consulta dejó de usar un índice, mucho antes de que empiece a
+// chocar contra `jobTimeout`.
+func runOnce(ctx context.Context, deps Deps, logger *slog.Logger, j job, trigger string) {
 	runCtx, cancel := context.WithTimeout(ctx, jobTimeout)
 	defer cancel()
 
-	if err := j.run(runCtx, deps, time.Now()); err != nil {
-		logger.Error("scheduled job failed", "job", j.name, "error", err)
+	logger.Info("scheduled job started", "job", j.name, "trigger", trigger)
+	start := time.Now()
+
+	if err := j.run(runCtx, deps, start); err != nil {
+		logger.Error("scheduled job failed",
+			"job", j.name,
+			"trigger", trigger,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"error", err)
+		return
 	}
+
+	logger.Info("scheduled job finished",
+		"job", j.name,
+		"trigger", trigger,
+		"duration_ms", time.Since(start).Milliseconds())
 }
