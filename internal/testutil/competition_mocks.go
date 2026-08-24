@@ -289,10 +289,20 @@ func (m *MockSettlementRepo) Create(
 	return args.Get(0).(*settlement.Settlement), args.Error(1)
 }
 
-func (m *MockSettlementRepo) MarkPaid(
-	ctx context.Context, id, paidBy string, at time.Time,
+func (m *MockSettlementRepo) Cancel(
+	ctx context.Context, source settlement.Source,
 ) (*settlement.Settlement, error) {
-	args := m.Called(ctx, id, paidBy, at)
+	args := m.Called(ctx, source)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*settlement.Settlement), args.Error(1)
+}
+
+func (m *MockSettlementRepo) MarkPaid(
+	ctx context.Context, id, paidBy, receiptURL string, at time.Time,
+) (*settlement.Settlement, error) {
+	args := m.Called(ctx, id, paidBy, receiptURL, at)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

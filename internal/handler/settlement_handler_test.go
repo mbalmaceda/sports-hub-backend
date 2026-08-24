@@ -3,6 +3,7 @@ package handler_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -67,9 +68,38 @@ func TestPaySettlement_DebtorManagerPays(t *testing.T) {
 	m.settlements.On("FindByID", mock.Anything, "st-1").Return(pendingSettlement(), nil)
 	m.memberships.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).
 		Return(managerOf(awayTeam, "user-away"), nil)
-	m.settlements.On("MarkPaid", mock.Anything, "st-1", "user-away", mock.Anything).Return(paid, nil)
+	m.settlements.On("MarkPaid", mock.Anything, "st-1", "user-away", "", mock.Anything).Return(paid, nil)
 
 	w, c := settlementRequest("user-away", http.MethodPost, "/settlements/st-1/pay")
+	h.Pay(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	m.settlements.AssertExpectations(t)
+}
+
+// El comprobante viaja y se guarda, igual que el de un cobro. Es la mitad que
+// hacía distintos los dos flujos de pago: el jugador adjuntaba una captura y el
+// manager declaraba a mano.
+func TestPaySettlement_KeepsTheReceipt(t *testing.T) {
+	h, m := newSettlementHandler()
+
+	paid := pendingSettlement()
+	paid.Status = settlement.StatusPaid
+	paid.ReceiptURL = "file:///tmp/transfer.jpg"
+	m.settlements.On("FindByID", mock.Anything, "st-1").Return(pendingSettlement(), nil)
+	m.memberships.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).
+		Return(managerOf(awayTeam, "user-away"), nil)
+	m.settlements.On(
+		"MarkPaid", mock.Anything, "st-1", "user-away", "file:///tmp/transfer.jpg", mock.Anything,
+	).Return(paid, nil)
+
+	w, c := settlementRequest("user-away", http.MethodPost, "/settlements/st-1/pay")
+	c.Request = httptest.NewRequest(
+		http.MethodPost, "/settlements/st-1/pay",
+		strings.NewReader(`{"receipt_url":"file:///tmp/transfer.jpg"}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+	withClaims(c, "user-away")
 	h.Pay(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -95,7 +125,7 @@ func TestPaySettlement_CreditorCannotPay(t *testing.T) {
 	h.Pay(c)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	m.settlements.AssertNotCalled(t, "MarkPaid", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	m.settlements.AssertNotCalled(t, "MarkPaid", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // Un jugador del equipo deudor tampoco: es plata del equipo.
@@ -113,7 +143,7 @@ func TestPaySettlement_PlayerCannotPay(t *testing.T) {
 	h.Pay(c)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	m.settlements.AssertNotCalled(t, "MarkPaid", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	m.settlements.AssertNotCalled(t, "MarkPaid", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // Declarar dos veces la misma transferencia no pisa al autor ni la fecha de la
@@ -124,7 +154,7 @@ func TestPaySettlement_AlreadyPaidIsRejected(t *testing.T) {
 	m.settlements.On("FindByID", mock.Anything, "st-1").Return(pendingSettlement(), nil)
 	m.memberships.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).
 		Return(managerOf(awayTeam, "user-away"), nil)
-	m.settlements.On("MarkPaid", mock.Anything, "st-1", "user-away", mock.Anything).
+	m.settlements.On("MarkPaid", mock.Anything, "st-1", "user-away", "", mock.Anything).
 		Return(nil, settlement.ErrAlreadyPaid)
 
 	w, c := settlementRequest("user-away", http.MethodPost, "/settlements/st-1/pay")

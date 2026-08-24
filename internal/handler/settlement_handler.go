@@ -140,18 +140,39 @@ func (h *SettlementHandler) GetPayeeBankAccount(c *gin.Context) {
 // Entre dos managers que acaban de jugar juntos, un estado intermedio esperando
 // que el otro confirme costaba más de lo que cuidaba.
 //
-// No pide comprobante: hoy la app no tiene dónde guardar la imagen —lo que
-// viaja en los cobros es un `file://` que solo resuelve en el teléfono que lo
-// subió— y pedir uno que se descarta sería repetir a sabiendas lo que ya es
-// deuda técnica conocida.
+// Lleva comprobante, igual que el cobro de un jugador. La imagen sigue sin
+// servir para nada —lo que viaja es el `file://` del selector, que solo resuelve
+// en el teléfono que lo subió, la misma deuda técnica de `charges.receipt_url`—
+// pero que los dos flujos de pago sean distintos costaba más que guardar una
+// ruta inútil: el día que haya almacenamiento de verdad se arreglan los dos.
+//
+// El campo es opcional en el binding y obligatorio en la pantalla. No es una
+// contradicción: hacerlo `required` acá rompería a cualquier app instalada que
+// todavía manda este POST sin body, y cerrar sin comprobante es exactamente lo
+// que este endpoint permitía hasta hoy, así que no afloja ninguna garantía que
+// existiera.
 func (h *SettlementHandler) Pay(c *gin.Context) {
 	s, ok := h.loadForDebtor(c)
 	if !ok {
 		return
 	}
 
+	var req struct {
+		ReceiptURL string `json:"receipt_url"`
+	}
+	// El body ausente es un cliente viejo, no una request mal armada: se sigue
+	// con el comprobante vacío. Un JSON roto sí es un 400.
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
 	userID, _ := currentUserID(c)
-	paid, err := h.settlements.MarkPaid(c.Request.Context(), s.ID, userID, time.Now())
+	paid, err := h.settlements.MarkPaid(
+		c.Request.Context(), s.ID, userID, req.ReceiptURL, time.Now(),
+	)
 	if errors.Is(err, settlement.ErrAlreadyPaid) {
 		c.JSON(http.StatusConflict, gin.H{"error": settlement.ErrAlreadyPaid.Error()})
 		return

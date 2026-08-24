@@ -30,6 +30,9 @@ type Status string
 const (
 	StatusPending Status = "pending"
 	StatusPaid    Status = "paid"
+	// StatusCancelled: el partido no se jugó. Si el rival ya había transferido,
+	// esa mitad hay que devolverla —fuera de la app, como todo lo demás—.
+	StatusCancelled Status = "cancelled"
 )
 
 /*
@@ -54,8 +57,11 @@ type Settlement struct {
 	PaidAt     *time.Time `json:"paid_at,omitempty"`
 	// Quién declaró la transferencia. Nadie la verifica del otro lado, así que
 	// sin el autor un pago discutido no tiene a quién preguntarle.
-	PaidBy    string    `json:"paid_by,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	PaidBy string `json:"paid_by,omitempty"`
+	// Comprobante de la transferencia, igual que en un cobro. Misma deuda
+	// técnica: hoy es la ruta local del teléfono que lo subió y nadie la lee.
+	ReceiptURL string    `json:"receipt_url,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // Involves indica si el equipo es una de las dos puntas.
@@ -93,6 +99,16 @@ type Repository interface {
 		Un solo paso, igual que el comprobante de un cobro: el que paga declara
 		y se le cree. El control de dos ojos costaba más de lo que cuidaba entre
 		dos managers que acaban de jugar juntos.
+
+		`receiptURL` puede venir vacío: las deudas saldadas antes de que el
+		comprobante existiera no tienen ninguno, y la columna es nullable.
 	*/
-	MarkPaid(ctx context.Context, id, paidBy string, at time.Time) (*Settlement, error)
+	MarkPaid(ctx context.Context, id, paidBy, receiptURL string, at time.Time) (*Settlement, error)
+	/*
+		Cancel da de baja la deuda porque el partido no se jugó.
+
+		Devuelve cómo estaba antes: si el rival ya había transferido, hay una
+		devolución entre managers que la app no hace pero sí tiene que avisar.
+	*/
+	Cancel(ctx context.Context, source Source) (*Settlement, error)
 }

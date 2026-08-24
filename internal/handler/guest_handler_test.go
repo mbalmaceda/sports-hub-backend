@@ -863,7 +863,7 @@ func newCompetitionHandler() (*handler.CompetitionHandler, *testutil.MockCompeti
 	cr := &testutil.MockCompetitionRepo{}
 	memr := &testutil.MockMembershipRepo{}
 	mr := &testutil.MockMatchRepo{}
-	return handler.NewCompetitionHandler(cr, memr, mr, nil, nil), cr, memr, mr
+	return handler.NewCompetitionHandler(cr, memr, mr, nil, nil, nil, nil, nil, nil), cr, memr, mr
 }
 
 // Antes alcanzaba con tener sesión y el UUID para leer la competencia de

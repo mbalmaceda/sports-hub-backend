@@ -502,14 +502,19 @@ func (h *ChargeHandler) RejectReceipt(c *gin.Context) {
 
 // Waive POST /charges/:chargeId/waive
 //
-// Cierra el cobro sin plata por la app: se pagó en efectivo, o el equipo decide
-// no perseguirlo más. Lo hace quien maneja la plata, nunca el deudor —si no,
-// cualquiera se perdona su propia cuota.
+// Cierra el cobro con plata que entró **fuera** de la app: se pagó en efectivo,
+// o lo cubre de su bolsillo quien maneja la plata del equipo. Lo hace ese, nunca
+// el deudor —si no, cualquiera cierra su propia cuota.
 //
-// Es la única salida que tiene un pendiente incobrable. Con los invitados de un
-// partido deja de ser un caso raro: al que vino un sábado y no volvió no hay
-// cuota mensual donde arrastrarle la deuda, y sin esto se quedaba en la lista
-// del manager para siempre.
+// No es condonar, aunque el estado se siga llamando `waived`: la cancha ya se
+// pagó, así que el monto sale de algún lado, y la app lo cuenta como cobrado
+// (ver `isCollected` en el móvil). `confirmed_by` guarda quién lo cerró, que es
+// lo que distingue esto de un pago declarado por el propio deudor.
+//
+// Es la única salida que tiene un pendiente que no va a entrar por la app. Con
+// los invitados de un partido deja de ser un caso raro: al que vino un sábado y
+// no volvió no hay cuota mensual donde arrastrarle la deuda, y sin esto se
+// quedaba en la lista del manager para siempre.
 func (h *ChargeHandler) Waive(c *gin.Context) {
 	ch, me, ok := h.loadCharge(c)
 	if !ok {

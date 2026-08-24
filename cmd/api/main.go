@@ -146,7 +146,10 @@ func main() {
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
 	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
 	competitionHandler := handler.NewCompetitionHandler(
-		competitionRepo, rosterRepo, matchRepo, teamRepo, notifications)
+		competitionRepo, rosterRepo, matchRepo, teamRepo,
+		// Todo lo que hay que deshacer al cancelar un partido. Ver `Cancel`.
+		chargeRepo, settlementRepo, fundsRepo, guestInviteRepo,
+		notifications)
 	friendlyHandler := handler.NewFriendlyHandler(
 		friendlyRepo, competitionRepo, matchRepo, rosterRepo, settlementRepo, teamRepo, notifications)
 	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, competitionRepo, chargeRepo, notifications, firebaseAuth)
@@ -292,6 +295,7 @@ func main() {
 		protected.GET("/teams/:id/competition-invitations", competitionHandler.ListInvitations)
 
 		protected.GET("/competitions/:competitionId", competitionHandler.GetByID)
+		protected.POST("/competitions/:competitionId/cancel", competitionHandler.Cancel)
 		protected.GET("/competitions/:competitionId/entries", competitionHandler.ListEntries)
 		protected.POST("/competitions/:competitionId/invitations", competitionHandler.Invite)
 		protected.POST("/competition-invitations/:invitationId/respond", competitionHandler.RespondToInvitation)

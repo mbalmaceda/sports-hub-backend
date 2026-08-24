@@ -72,8 +72,17 @@ func (r *MatchRepository) ListByCompetition(ctx context.Context, competitionID s
 	return collectMatches(rows)
 }
 
+// ListByTeam trae además cuántos confirmaron cada partido.
+//
+// El conteo viaja acá y no en una consulta aparte porque el único que lo usa es
+// la pestaña Partidos, que los muestra todos juntos: pedirlo por fuera era un
+// request por partido —siete al abrir, cuarenta después de una temporada— para
+// pintar un número. La subconsulta corre sobre el índice
+// `match_callups (match_id, membership_id)` y no agrega ninguna vuelta.
 func (r *MatchRepository) ListByTeam(ctx context.Context, teamID string) ([]*match.Match, error) {
-	q := `SELECT` + matchColumns + `
+	q := `SELECT` + matchColumns + `,
+		(SELECT count(*) FROM match_callups c
+		  WHERE c.match_id = matches.id AND c.status = 'confirmed')
 		FROM matches
 		WHERE home_team_id = $1 OR away_team_id = $1
 		ORDER BY scheduled_at`
@@ -82,7 +91,32 @@ func (r *MatchRepository) ListByTeam(ctx context.Context, teamID string) ([]*mat
 		return nil, fmt.Errorf("match.ListByTeam: %w", err)
 	}
 	defer rows.Close()
-	return collectMatches(rows)
+
+	var out []*match.Match
+	for rows.Next() {
+		m := &match.Match{}
+		var venue, recordedBy *string
+		var confirmed int
+		if err := rows.Scan(
+			&m.ID, &m.CompetitionID, &m.HomeTeamID, &m.AwayTeamID,
+			&m.ScheduledAt, &venue, &m.Status,
+			&m.HomeScore, &m.AwayScore, &m.ResultRecordedAt, &recordedBy,
+			&m.CreatedAt, &confirmed,
+		); err != nil {
+			return nil, fmt.Errorf("match.ListByTeam: scan: %w", err)
+		}
+		if venue != nil {
+			m.Venue = *venue
+		}
+		if recordedBy != nil {
+			m.ResultRecordedBy = *recordedBy
+		}
+		// `confirmed` se declara dentro del cuerpo del for, así que cada
+		// iteración tiene la suya y el puntero no se pisa entre filas.
+		m.ConfirmedCount = &confirmed
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // ListByTeamOnDate busca partidos del equipo el mismo día, para avisar choques

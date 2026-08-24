@@ -638,6 +638,16 @@ amistoso es inmediato, porque tiene uno solo.
 `result_recorded_at` y `result_recorded_by`.
 
 Todo partido trae esos cuatro campos, ausentes mientras nadie cargó el resultado.
+
+### `confirmed_count`, solo en `GET /teams/:id/matches`
+Cuántos confirmaron la citación de ese partido. Lo trae **únicamente** el listado
+por equipo, que es donde la app lo necesita: la pestaña Partidos muestra "12
+fueron" bajo el marcador de cada encuentro, y pedirlo por fuera era un request
+por partido.
+
+Ausente quiere decir "esta consulta no lo calculó", no cero: un partido leído por
+`GET /matches/:matchId` o por la lista de una competencia llega sin el campo, y
+tratarlo como 0 diría que no fue nadie.
 Ausente **no es** `0`: un empate sin goles es un resultado, y por eso los goles
 viajan como punteros y el 0 a 0 se acepta.
 
@@ -708,14 +718,24 @@ de lista viajan cada vez que alguien abre la app.
 **Response 404** — el organizador todavía no cargó sus datos bancarios.
 
 ### POST `/settlements/:settlementId/pay`
-El deudor declara la transferencia. Sin body. Requiere `manager` o `treasurer`
-del equipo que debe: **el acreedor no puede** cerrarla, y esa guarda es la que
-sostiene el modelo — acá nadie verifica nada, se le cree al que dice haber
-transferido.
+El deudor declara la transferencia. Requiere `manager` o `treasurer` del equipo
+que debe: **el acreedor no puede** cerrarla, y esa guarda es la que sostiene el
+modelo — acá nadie verifica nada, se le cree al que dice haber transferido.
 
-No pide comprobante a propósito: la app no tiene dónde guardar la imagen (ver la
-deuda técnica del comprobante en el CLAUDE.md del móvil), y pedir uno que se
-descarta sería repetir a sabiendas algo que ya no funciona.
+```json
+{ "receipt_url": "file:///.../transferencia.jpg" }
+```
+
+El comprobante es el mismo que el de `POST /charges/:chargeId/receipt`, para que
+los dos pagos de la app sean un solo flujo. Arrastra la misma deuda técnica: hoy
+llega la ruta local del teléfono que lo eligió y nadie la lee (ver el CLAUDE.md
+del móvil). Se guarda igual para que el día que haya almacenamiento las dos se
+arreglen juntas.
+
+El body es **opcional** acá y obligatorio en la pantalla. Hacerlo `required`
+rompería a cualquier app instalada que todavía manda este POST sin body, y
+cerrar sin comprobante es lo que este endpoint permitía hasta ahora: no afloja
+ninguna garantía que existiera.
 
 **Response 409** `{ "error": "this settlement was already paid" }`  
 **Response 403** — no manejás la plata del equipo que debe

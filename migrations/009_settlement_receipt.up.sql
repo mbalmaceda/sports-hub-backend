@@ -1,0 +1,14 @@
+-- El comprobante de la transferencia entre equipos.
+--
+-- Faltaba por una asimetría que no tenía razón de ser: el jugador que paga su
+-- cuota de cancha adjunta una captura y el manager que transfiere la mitad de
+-- su equipo declaraba a mano, sin nada que mostrar. Es la misma acción —ir al
+-- banco y volver con la captura— y ahora es el mismo flujo de las dos puntas.
+--
+-- Se guarda igual que `charges.receipt_url` y con la misma deuda técnica a
+-- cuestas: hoy lo que llega es la ruta local del selector del teléfono
+-- (`file://`, o `blob:` en web), que solo resuelve en el dispositivo que la
+-- subió. Nadie la lee, ni podría. Es TEXT y nullable a propósito: cuando haya
+-- almacenamiento de verdad, acá empieza a llegar una URL y las dos columnas se
+-- arreglan juntas, sin migrar nada.
+ALTER TABLE team_settlements ADD COLUMN receipt_url TEXT;

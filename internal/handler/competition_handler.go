@@ -3,15 +3,20 @@ package handler
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/charge"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/funds"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/guest"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/settlement"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
 	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 )
@@ -25,10 +30,16 @@ const invitationTTL = 7 * 24 * time.Hour
 
 type CompetitionHandler struct {
 	competitions  competition.Repository
+	matches       match.Repository
 	teams         team.Repository
 	notifications *notify.Service
 	authz         teamAuthorizer
 	access        competitionAccess
+	// Todo lo que hay que deshacer al cancelar. Ver `Cancel`.
+	charges     charge.Repository
+	settlements settlement.Repository
+	funds       funds.Repository
+	invites     guest.Repository
 }
 
 func NewCompetitionHandler(
@@ -36,19 +47,261 @@ func NewCompetitionHandler(
 	memberships membership.Repository,
 	matches match.Repository,
 	teams team.Repository,
+	charges charge.Repository,
+	settlements settlement.Repository,
+	teamFunds funds.Repository,
+	invites guest.Repository,
 	notifications *notify.Service,
 ) *CompetitionHandler {
 	authz := teamAuthorizer{memberships: memberships}
 	return &CompetitionHandler{
 		competitions:  competitions,
+		matches:       matches,
 		teams:         teams,
 		notifications: notifications,
 		authz:         authz,
+		charges:       charges,
+		settlements:   settlements,
+		funds:         teamFunds,
+		invites:       invites,
 		// El repositorio de partidos entra solo por esto: la regla de acceso
 		// necesita saber si un invitado tiene convocatoria a alguno de los
 		// partidos de la competencia.
 		access: competitionAccess{authz: authz, competitions: competitions, matches: matches},
 	}
+}
+
+/*
+Cancel POST /competitions/:competitionId/cancel
+
+Da de baja un partido que ya movió gente y plata. Lo hace el manager del equipo
+**organizador**: es el que reservó y pagó la cancha, así que es el que puede
+soltarla. El rival que se cae tiene que pedírselo — dejarlo cancelar por su
+cuenta sería que un tercero deshaga el compromiso que el otro ya pagó.
+
+Es **irreversible**. No hay un "descancelar" porque volver atrás tendría que
+resucitar los cobros anulados adivinando cuáles estaban pagados, y un partido
+que se recupera se vuelve a acordar: es un desafío nuevo, no este.
+
+El corte para poder cancelar es el **resultado y no la hora**: un partido se
+suspende a la hora del pitazo —llueve, no se juntó la gente— así que la hora no
+puede bloquear. Uno con marcador cargado ya se jugó, y ahí lo que corresponde es
+corregir el marcador.
+
+Lo que deshace, en orden, y por qué cada cosa:
+
+ 1. Los **cobros**, todos, incluidos los pagados. La plata que los jugadores
+    pusieron por una cancha que no se usó no es del equipo: dejarlos en 'paid'
+    la contaría como ingreso del mes. Pasan a 'cancelled', que no suma en
+    ningún lado y conserva quién había pagado cuánto — la única lista de a
+    quién devolverle.
+ 2. La **liquidación** entre equipos, por lo mismo. Si el rival ya había
+    transferido su mitad, el organizador tiene plata ajena que devolver.
+ 3. Los **fondos** del reparto: un excedente de un partido que no se jugó es
+    plata inventada. `funds.Set` con cero borra la entrada.
+ 4. Los **enlaces de invitados** vigentes, o alguien se suma por WhatsApp a un
+    partido que ya no existe.
+ 5. Los **partidos** y la competencia.
+
+Ninguno de esos pasos aborta la cancelación si falla, y es a propósito: el
+partido se cancela igual. Un cobro que quedó vivo se puede volver a anular; una
+competencia a medio cancelar —con la cancha soltada y la gente esperando— no
+tiene arreglo desde ninguna pantalla.
+*/
+func (h *CompetitionHandler) Cancel(c *gin.Context) {
+	ctx := c.Request.Context()
+	competitionID := c.Param("competitionId")
+
+	comp, err := h.competitions.FindByID(ctx, competitionID)
+	if errors.Is(err, competition.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "competition not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	me, err := h.authz.requireRole(c, comp.OrganizerTeamID, membership.RoleManager)
+	if abortAuthz(c, err) {
+		return
+	}
+
+	if comp.Status == competition.StatusCancelled {
+		c.JSON(http.StatusConflict, gin.H{"error": "this competition was already cancelled"})
+		return
+	}
+
+	matches, err := h.matches.ListByCompetition(ctx, competitionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	for _, m := range matches {
+		if m.HasResult() {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "this match already has a result: correct the score instead of cancelling",
+			})
+			return
+		}
+	}
+
+	source := charge.Source{Type: charge.SourceMatchCost, ID: competitionID}
+
+	refundable, err := h.charges.CancelBySource(ctx, source)
+	if err != nil {
+		slog.Error("could not cancel the charges of a cancelled match",
+			"error", err, "competition_id", competitionID)
+	}
+
+	paidSettlement, err := h.settlements.Cancel(ctx, settlement.Source{
+		Type: settlement.SourceMatchCost, ID: competitionID,
+	})
+	if err != nil {
+		slog.Error("could not cancel what the rival owed for the venue",
+			"error", err, "competition_id", competitionID)
+	}
+
+	// El excedente del reparto se borra para los dos equipos: cada uno guardó
+	// el suyo, y el que no organizó también tiene fondo si repartió.
+	for _, teamID := range teamsOf(matches) {
+		if err := h.funds.Set(ctx, teamID, funds.Source{
+			Type: funds.SourceMatchCost, ID: competitionID,
+		}, 0, ""); err != nil {
+			slog.Error("could not clear the funds of a cancelled match",
+				"error", err, "competition_id", competitionID, "team_id", teamID)
+		}
+	}
+
+	now := time.Now()
+	for _, m := range matches {
+		if err := h.matches.UpdateStatus(ctx, m.ID, match.StatusCancelled); err != nil {
+			slog.Error("could not cancel the match",
+				"error", err, "match_id", m.ID)
+		}
+		invites, err := h.invites.ListByMatch(ctx, m.ID)
+		if err != nil {
+			continue
+		}
+		for _, inv := range invites {
+			if inv.RevokedAt == nil {
+				_ = h.invites.Revoke(ctx, inv.ID, now)
+			}
+		}
+	}
+
+	if err := h.competitions.UpdateStatus(ctx, competitionID, competition.StatusCancelled); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not cancel the competition"})
+		return
+	}
+
+	h.notifyCancelled(ctx, matches, me.UserID, len(refundable) > 0, paidSettlement)
+
+	c.JSON(http.StatusOK, gin.H{
+		"competition_id": competitionID,
+		// Cuántos cobros hay que devolver y por cuánto. La app lo usa para
+		// confirmar en pantalla lo que el manager acaba de asumir.
+		"refunds":      len(refundable),
+		"refund_total": totalOf(refundable),
+	})
+}
+
+/*
+notifyCancelled avisa a los dos lados que el partido no va.
+
+Va a **todo el que fue citado**, no solo a los managers: el que confirmó y se
+guardó el sábado es el primero que tiene que enterarse, y es el aviso más urgente
+de la app —a diferencia de casi todos los demás, este pierde valor con cada hora
+que pasa—.
+
+El texto cambia según haya plata de por medio, y esa diferencia importa: si nadie
+pagó, la baja es solo una agenda que se libera. Si hubo cobros, la persona tiene
+una devolución esperando y necesita saberlo desde el aviso, no al abrir la app
+tres días después.
+
+El destino es el **partido**, igual que el resto de los avisos de partido: su
+resumen es el que queda diciendo que se canceló y, para quien maneja la plata, a
+quién hay que devolverle. Se manda el primero porque hoy toda competencia
+cancelable tiene uno solo —el amistoso y el interno—; el día que se cancele un
+partido suelto de un torneo, esto pasa a ser por partido y no por competencia.
+*/
+func (h *CompetitionHandler) notifyCancelled(
+	ctx context.Context,
+	matches []*match.Match,
+	actor string,
+	hasRefunds bool,
+	paidSettlement *settlement.Settlement,
+) {
+	if !h.notifications.Enabled() {
+		return
+	}
+
+	body := "El partido no se juega."
+	if hasRefunds {
+		body = "El partido no se juega. Tu manager te devuelve lo que pagaste."
+	}
+
+	// Sin partido no hay a dónde llevar. No debería pasar —una competencia
+	// activa siempre tiene el suyo— pero mandar un aviso que abre en la nada es
+	// peor que no mandarlo.
+	if len(matches) == 0 {
+		return
+	}
+	entityID := matches[0].ID
+
+	for _, teamID := range teamsOf(matches) {
+		h.notifications.EmitAsync(notify.Event{
+			TeamID:   teamID,
+			Type:     notification.TypeMatchCancelled,
+			EntityID: entityID,
+			Title:    "Se canceló el partido",
+			Body:     body,
+			Recipients: notify.To(teamUserIDs(ctx, h.authz.memberships, teamID, func(m *membership.TeamMember) bool {
+				return m.UserID != actor
+			})...),
+		})
+	}
+
+	// La mitad que el rival ya había transferido es una devolución entre
+	// managers, y el que la espera es el del equipo retado. Va aparte porque el
+	// aviso de arriba habla de la cuota propia de cada jugador, que es otra
+	// plata y otro interlocutor.
+	if paidSettlement != nil && paidSettlement.Status == settlement.StatusPaid {
+		h.notifications.EmitAsync(notify.Event{
+			TeamID:   paidSettlement.FromTeamID,
+			Type:     notification.TypeMatchCancelled,
+			EntityID: entityID,
+			Title:    "Se canceló el partido",
+			Body:     "Ya habías transferido tu mitad de la cancha: el otro equipo tiene que devolvértela.",
+			Recipients: notify.To(
+				managerIDs(ctx, h.authz.memberships, paidSettlement.FromTeamID, actor)...,
+			),
+		})
+	}
+}
+
+// teamsOf junta los equipos que jugaban, sin repetir. En un partido interno los
+// dos lados son el mismo, y borrarle el fondo dos veces no rompe pero sobra.
+func teamsOf(matches []*match.Match) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range matches {
+		for _, id := range []string{m.HomeTeamID, m.AwayTeamID} {
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
+func totalOf(charges []*charge.Charge) int64 {
+	var total int64
+	for _, ch := range charges {
+		total += ch.Amount
+	}
+	return total
 }
 
 // ListByTeam GET /teams/:id/competitions

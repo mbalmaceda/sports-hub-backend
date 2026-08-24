@@ -23,20 +23,23 @@ func NewSettlementRepository(pool *pgxpool.Pool) *SettlementRepository {
 // Ojo con el espacio inicial: se concatena a `SELECT`/`RETURNING` crudos, y sin
 // el espacio saldría `SELECTid`.
 const settlementColumns = ` id, source_type, source_id, from_team_id, to_team_id,
-	amount, currency, status, paid_at, paid_by, created_at`
+	amount, currency, status, paid_at, paid_by, receipt_url, created_at`
 
 func scanSettlement(row pgx.Row) (*settlement.Settlement, error) {
 	s := &settlement.Settlement{}
-	var paidBy *string
+	var paidBy, receiptURL *string
 	err := row.Scan(
 		&s.ID, &s.Source.Type, &s.Source.ID, &s.FromTeamID, &s.ToTeamID,
-		&s.Amount, &s.Currency, &s.Status, &s.PaidAt, &paidBy, &s.CreatedAt,
+		&s.Amount, &s.Currency, &s.Status, &s.PaidAt, &paidBy, &receiptURL, &s.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if paidBy != nil {
 		s.PaidBy = *paidBy
+	}
+	if receiptURL != nil {
+		s.ReceiptURL = *receiptURL
 	}
 	return s, nil
 }
@@ -114,15 +117,44 @@ func (r *SettlementRepository) Create(
 // MarkPaid cierra la deuda. El `status = 'pending'` del WHERE es lo que hace
 // que declarar dos veces no pise el autor ni la fecha del primer pago: la
 // segunda no encuentra fila y el handler la traduce a ErrAlreadyPaid.
+// Cancel da de baja la deuda entre equipos porque el partido no se jugó.
+//
+// Devuelve la liquidación como estaba **antes**, para que el llamador sepa si
+// había plata transferida: si estaba en 'paid', el organizador tiene una mitad
+// ajena que devolver y los dos managers necesitan enterarse.
+//
+// `nil, nil` si no había ninguna, que es el caso normal de una cancha gratis o
+// un partido interno.
+func (r *SettlementRepository) Cancel(
+	ctx context.Context, source settlement.Source,
+) (*settlement.Settlement, error) {
+	before, err := r.FindBySource(ctx, source)
+	if errors.Is(err, settlement.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("settlement.Cancel (read): %w", err)
+	}
+
+	const q = `UPDATE team_settlements SET status = 'cancelled'
+		WHERE source_type = $1 AND source_id = $2 AND status <> 'cancelled'`
+	if _, err := r.pool.Exec(ctx, q, source.Type, source.ID); err != nil {
+		return nil, fmt.Errorf("settlement.Cancel: %w", err)
+	}
+	return before, nil
+}
+
 func (r *SettlementRepository) MarkPaid(
-	ctx context.Context, id, paidBy string, at time.Time,
+	ctx context.Context, id, paidBy, receiptURL string, at time.Time,
 ) (*settlement.Settlement, error) {
 	q := `
 		UPDATE team_settlements
-		SET status = 'paid', paid_at = $2, paid_by = $3
+		SET status = 'paid', paid_at = $2, paid_by = $3, receipt_url = $4
 		WHERE id = $1 AND status = 'pending'
 		RETURNING` + settlementColumns
-	s, err := scanSettlement(r.pool.QueryRow(ctx, q, id, at, nullIfEmpty(paidBy)))
+	s, err := scanSettlement(
+		r.pool.QueryRow(ctx, q, id, at, nullIfEmpty(paidBy), nullIfEmpty(receiptURL)),
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, settlement.ErrAlreadyPaid
 	}

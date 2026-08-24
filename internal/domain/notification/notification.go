@@ -67,6 +67,16 @@ const (
 	// contestaron, la víspera. Lo dispara el reloj y no una acción, así que va
 	// con clave de deduplicación: uno por persona y por partido, para siempre.
 	TypeMatchReminder Type = "match_reminder"
+	/*
+		TypeMatchCancelled: id del partido, como el resto de los avisos de
+		partido. Lleva a su resumen, que es donde queda dicho que se canceló y,
+		para quien maneja la plata, a quién hay que devolverle.
+
+		Va a los citados de los dos equipos y, si había plata de por medio, al
+		manager del rival — que además de quedarse sin partido puede tener una
+		transferencia que reclamar.
+	*/
+	TypeMatchCancelled Type = "match_cancelled"
 
 	// ── Plata ──
 

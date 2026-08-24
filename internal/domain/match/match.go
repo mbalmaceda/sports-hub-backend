@@ -48,6 +48,20 @@ type Match struct {
 	// sin el autor, un resultado discutido no tiene a quién preguntarle.
 	ResultRecordedBy string    `json:"result_recorded_by,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
+	/*
+		Cuánta gente confirmó la citación de este partido.
+
+		Solo lo trae `ListByTeam`, que es donde la app lo necesita: la pestaña
+		Partidos muestra "12 fueron" bajo el marcador de cada encuentro. Sin
+		esta columna había que pedir la convocatoria de cada partido por
+		separado para contar, y eso era un request por fila.
+
+		Puntero y no `int` por la misma razón que el marcador: nulo es "no se
+		calculó en esta consulta" y cero es "no confirmó nadie". Con un `int`
+		plano, todo partido leído por otra puerta —`FindByID`,
+		`ListByCompetition`— llegaría diciendo que no fue nadie.
+	*/
+	ConfirmedCount *int `json:"confirmed_count,omitempty"`
 }
 
 // Involves indica si el equipo juega este partido.

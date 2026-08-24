@@ -266,6 +266,42 @@ func (r *ChargeRepository) Waive(ctx context.Context, id, waivedBy string, at ti
 	return ch, nil
 }
 
+// CancelBySource anula todos los cobros de una competencia que se dio de baja.
+//
+// Toca **todos** los estados vivos y no solo los pendientes, que es lo que la
+// distingue de `Waive`: la plata que los jugadores ya pusieron por una cancha
+// que no se usó tampoco es del equipo. Al pasar a 'cancelled' sale del ingreso
+// del mes y la fila se queda con el monto, la persona y el `confirmed_at`, que
+// es de dónde sale la lista de a quién devolverle.
+//
+// Devuelve los que **estaban cobrados**, que son los únicos que generan una
+// devolución. Se leen antes del UPDATE a propósito: después ya son todos
+// 'cancelled' y no hay cómo distinguir al que había pagado del que nunca pagó.
+func (r *ChargeRepository) CancelBySource(
+	ctx context.Context, source charge.Source,
+) ([]*charge.Charge, error) {
+	before, err := r.ListBySource(ctx, source)
+	if err != nil {
+		return nil, fmt.Errorf("charge.CancelBySource (read): %w", err)
+	}
+
+	const q = `UPDATE charges
+		SET status = 'cancelled'
+		WHERE source_type = $1 AND source_id = $2
+		  AND status IN ('pending', 'submitted', 'paid', 'waived')`
+	if _, err := r.pool.Exec(ctx, q, source.Type, source.ID); err != nil {
+		return nil, fmt.Errorf("charge.CancelBySource: %w", err)
+	}
+
+	var refundable []*charge.Charge
+	for _, ch := range before {
+		if ch.Status == charge.StatusPaid || ch.Status == charge.StatusWaived {
+			refundable = append(refundable, ch)
+		}
+	}
+	return refundable, nil
+}
+
 func (r *ChargeRepository) RejectReceipt(ctx context.Context, id string) (*charge.Charge, error) {
 	q := `UPDATE charges
 		SET status = 'pending', receipt_url = NULL, submitted_at = NULL

@@ -43,6 +43,10 @@ const (
 	StatusSubmitted Status = "submitted"
 	StatusPaid      Status = "paid"
 	StatusWaived    Status = "waived"
+	// StatusCancelled es el cobro de un partido que no se jugó. No cuenta ni
+	// como ingreso ni como deuda, y conserva monto y persona: es la lista de a
+	// quién hay que devolverle.
+	StatusCancelled Status = "cancelled"
 )
 
 // IsSettled indica si el cargo ya no admite que se rehaga el reparto: es plata
@@ -264,4 +268,13 @@ type Repository interface {
 		un vencimiento automático, y tiene que quedar con nombre.
 	*/
 	Waive(ctx context.Context, id, waivedBy string, at time.Time) (*Charge, error)
+	/*
+		CancelBySource anula todos los cobros de una competencia dada de baja.
+
+		Distinto de `Waive` en que toca también los ya cobrados: la plata que
+		los jugadores pusieron por una cancha que no se usó tampoco es del
+		equipo. Devuelve los que estaban cobrados, que son los que hay que
+		devolver.
+	*/
+	CancelBySource(ctx context.Context, source Source) ([]*Charge, error)
 }
