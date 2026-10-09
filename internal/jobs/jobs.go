@@ -244,7 +244,21 @@ sano corriendo seguido.
 const (
 	triggerSchedule = "schedule"
 	triggerStartup  = "startup"
+	triggerRequest  = "request"
 )
+
+/*
+Sweep corre la barrida una vez, fuera del scheduler.
+
+Existe para cuando el cron está apagado (`JOBS_ENABLED`, ver `config`): la
+barrida no necesita reloj —la app deriva el vencimiento y las escrituras
+verifican el plazo—, así que puede correr cuando llega tráfico, que es justo
+cuando la base ya está despierta. Quien decide cada cuánto es
+`middleware.Housekeeping`.
+*/
+func Sweep(ctx context.Context, deps Deps, logger *slog.Logger) {
+	runOnce(ctx, deps, logger, all[0], triggerRequest)
+}
 
 func runner(ctx context.Context, deps Deps, logger *slog.Logger, j job) func() {
 	return func() { runOnce(ctx, deps, logger, j, triggerSchedule) }

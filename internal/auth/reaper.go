@@ -30,15 +30,22 @@ func StartTokenReaper(ctx context.Context, tokens RefreshTokenRepository, logger
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				deleted, err := tokens.DeleteExpired(ctx, time.Now().Add(-reaperGrace))
-				if err != nil {
-					logger.Error("refresh token reaper failed", "error", err)
-					continue
-				}
-				if deleted > 0 {
-					logger.Info("refresh tokens reaped", "deleted", deleted)
-				}
+				ReapExpired(ctx, tokens, logger)
 			}
 		}
 	}()
+}
+
+// ReapExpired hace una pasada de limpieza. Es el cuerpo del ticker, separado
+// para poder correrlo con el tráfico cuando el scheduler está apagado (ver
+// `middleware.Housekeeping`).
+func ReapExpired(ctx context.Context, tokens RefreshTokenRepository, logger *slog.Logger) {
+	deleted, err := tokens.DeleteExpired(ctx, time.Now().Add(-reaperGrace))
+	if err != nil {
+		logger.Error("refresh token reaper failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		logger.Info("refresh tokens reaped", "deleted", deleted)
+	}
 }

@@ -54,6 +54,24 @@ type Config struct {
 	// archivos —los comprobantes viajan como URL—, así que 1 MB sobra.
 	MaxBodyBytes int64
 
+	/*
+		JobsEnabled prende el scheduler de `internal/jobs`: la barrida de lo
+		vencido cada 10 minutos, el recordatorio de partido, la cuota vencida y el
+		resumen mensual. Apagado por defecto, y es a propósito.
+
+		Neon cobra el tiempo que la base pasa despierta, no las consultas, y se
+		suspende recién tras cinco minutos sin actividad. Un cron que la toca cada
+		diez la dejaba encendida las veinticuatro horas: unos US$50 al mes con el
+		tráfico casi en cero. Apagado, los tres avisos con horario no salen, y la
+		barrida y la limpieza de tokens corren con el tráfico (ver
+		`middleware.Housekeeping`).
+
+		Se prende sin deploy: `fly secrets set JOBS_ENABLED=true` reinicia la
+		máquina con el valor nuevo, y `fly secrets unset JOBS_ENABLED` lo vuelve a
+		apagar. Prenderlo vuelve a dejar la base despierta todo el día.
+	*/
+	JobsEnabled bool
+
 	// ── Enlaces de invitación ────────────────────────────────────────────────
 	//
 	// El enlace que se comparte por WhatsApp apunta acá, no a la app: quien lo
@@ -137,6 +155,15 @@ func Load() (Config, error) {
 		corsEnabled = parsed
 	}
 
+	jobsEnabled := false
+	if raw := os.Getenv("JOBS_ENABLED"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("JOBS_ENABLED must be a boolean: %w", err)
+		}
+		jobsEnabled = parsed
+	}
+
 	corsAllowedOrigins := defaultCORSAllowedOrigins
 	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
 		origins := make([]string, 0)
@@ -215,6 +242,7 @@ func Load() (Config, error) {
 		CORSAllowedOrigins:      corsAllowedOrigins,
 		CORSAllowedOriginRegex:  corsRegex,
 		MaxBodyBytes:            maxBodyBytes,
+		JobsEnabled:             jobsEnabled,
 		PublicBaseURL:           publicBaseURL,
 		AndroidPackageName:      androidPackage,
 		AndroidCertFingerprints: fingerprints,

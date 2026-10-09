@@ -19,11 +19,17 @@ const (
 	// del servidor y acá hay 256 MB.
 	maxConns = 10
 
-	// Un par de conexiones tibias. Abrir una nueva contra Postgres administrado
-	// cuesta el handshake TLS completo, decenas de milisegundos que se le cargan
-	// a la primera request; con auto_stop_machines eso pasa cada vez que la
-	// máquina despierta.
-	minConns = 2
+	// Ninguna conexión retenida, y es lo que más plata ahorra de todo este
+	// archivo. Neon cobra el tiempo que el compute está despierto y lo suspende
+	// recién tras cinco minutos sin actividad; con un mínimo de dos, el pool
+	// soltaba las ociosas y el health check las volvía a abrir al minuto
+	// siguiente, y cada reconexión reiniciaba ese reloj. La base quedaba
+	// encendida las veinticuatro horas: unos US$50 al mes con el tráfico en cero.
+	//
+	// El costo es el handshake TLS en la primera request después de un rato, que
+	// igual queda tapado por el arranque en frío de Neon; el corte de 15 s del
+	// api-client de la app ya contempla esa espera.
+	minConns = 0
 
 	// Las conexiones se reciclan aunque estén sanas: del otro lado hay un pooler
 	// que rota los backends, y una conexión eterna termina pegada a un backend
@@ -32,12 +38,14 @@ const (
 	maxConnLifetime       = 30 * time.Minute
 	maxConnLifetimeJitter = 5 * time.Minute
 
-	// Postgres administrado suspende la instancia cuando no hay tráfico y corta
-	// lo que quedó abierto. Soltar lo ocioso antes evita descubrirlo con una
-	// conexión muerta en la mano.
-	maxConnIdleTime = 5 * time.Minute
+	// Lo ocioso se suelta enseguida: una conexión abierta sin uso no deja que
+	// Neon cuente sus cinco minutos de inactividad, y además, al suspender, Neon
+	// corta lo que quedó abierto. Soltarlo antes evita las dos cosas, la cuenta
+	// estirada y descubrir la conexión muerta con una request en la mano.
+	maxConnIdleTime = 1 * time.Minute
 
-	// Cada cuánto el pool revisa lo ocioso y repone hasta minConns.
+	// Cada cuánto el pool revisa lo ocioso. Con minConns en 0 no repone nada:
+	// solo cierra.
 	healthCheckPeriod = 1 * time.Minute
 
 	// Cota al arranque: sin esto, una base inalcanzable deja el proceso colgado

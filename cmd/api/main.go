@@ -87,19 +87,21 @@ func main() {
 	// JWT_SECRET sin cortar las sesiones abiertas.
 	signer := auth.NewSigner(cfg.JWTSecret, cfg.JWTSecretPrevious)
 
-	// Limpieza periódica de refresh tokens vencidos.
-	auth.StartTokenReaper(ctx, tokenRepo, slog.Default())
-
 	/*
-		Lo que pasa porque pasó el tiempo: la barrida de lo vencido y los tres
-		avisos que dispara el reloj.
+		Lo que pasa porque pasó el tiempo: la barrida de lo vencido, la limpieza
+		de refresh tokens y los tres avisos que dispara el reloj.
 
-		La barrida vivía adentro de cada GET, así que nada expiraba si nadie
-		abría la app; los avisos directamente no existían. Que el scheduler no
-		tenga memoria entre reinicios no es problema: lo que garantiza que un
-		aviso salga una sola vez es `dedupe_key` en Postgres, no el horario.
+		Que el scheduler no tenga memoria entre reinicios no es problema: lo que
+		garantiza que un aviso salga una sola vez es `dedupe_key` en Postgres, no
+		el horario.
+
+		Va detrás de JOBS_ENABLED, apagado por defecto, porque un reloj que toca
+		la base cada pocos minutos no la deja suspenderse nunca y Neon cobra el
+		tiempo despierta (ver `config.JobsEnabled`). Apagado, los avisos con
+		horario no salen, y la barrida y la limpieza —que no necesitan reloj—
+		corren colgadas de las requests con sesión.
 	*/
-	stopJobs := jobs.Start(ctx, jobs.Deps{
+	jobDeps := jobs.Deps{
 		Friendlies:    friendlyRepo,
 		Competitions:  competitionRepo,
 		Matches:       matchRepo,
@@ -107,8 +109,23 @@ func main() {
 		Teams:         teamRepo,
 		Memberships:   rosterRepo,
 		Notifications: notifications,
-	}, slog.Default())
-	defer stopJobs()
+	}
+	var housekeeping gin.HandlerFunc
+	if cfg.JobsEnabled {
+		auth.StartTokenReaper(ctx, tokenRepo, slog.Default())
+		stopJobs := jobs.Start(ctx, jobDeps, slog.Default())
+		defer stopJobs()
+	} else {
+		slog.Info("scheduler disabled (JOBS_ENABLED=false): timed notifications are off, sweep runs on traffic")
+		housekeeping = middleware.Housekeeping(
+			middleware.Task{Every: 10 * time.Minute, Run: func(ctx context.Context) {
+				jobs.Sweep(ctx, jobDeps, slog.Default())
+			}},
+			middleware.Task{Every: 6 * time.Hour, Run: func(ctx context.Context) {
+				auth.ReapExpired(ctx, tokenRepo, slog.Default())
+			}},
+		)
+	}
 
 	// Limitadores. Están en memoria y son exactos mientras Fly corra una sola
 	// máquina; con varias, el límite efectivo se multiplica por la cantidad.
@@ -234,6 +251,11 @@ func main() {
 	// Rutas protegidas — requieren JWT válido
 	protected := r.Group("/")
 	protected.Use(auth.Middleware(signer))
+	// Solo acá y no en todo el router: /health recibe el chequeo de Fly cada
+	// treinta segundos y colgarla de ahí volvería a mantener la base despierta.
+	if housekeeping != nil {
+		protected.Use(housekeeping)
+	}
 	{
 		protected.POST("/auth/logout-all", authHandler.LogoutAll)
 

@@ -46,3 +46,41 @@ func TestValidatePublicBaseURL(t *testing.T) {
 		}
 	}
 }
+
+/*
+JOBS_ENABLED tiene que venir apagado si no se dice nada: prendido, el cron deja
+Neon despierto todo el día y eso es lo que se paga. Un valor que no se entiende
+frena el arranque en vez de adivinar para qué lado iba.
+*/
+func TestLoadJobsEnabled(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("JWT_SECRET", "secreto-de-prueba-de-al-menos-treinta-y-dos-bytes")
+
+	cases := []struct {
+		raw     string
+		want    bool
+		wantErr bool
+	}{
+		{raw: "", want: false},
+		{raw: "false", want: false},
+		{raw: "true", want: true},
+		{raw: "1", want: true},
+		{raw: "quizás", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Setenv("JOBS_ENABLED", tc.raw)
+		cfg, err := Load()
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("JOBS_ENABLED=%q: se esperaba error", tc.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("JOBS_ENABLED=%q: %v", tc.raw, err)
+		}
+		if cfg.JobsEnabled != tc.want {
+			t.Errorf("JOBS_ENABLED=%q: JobsEnabled = %v, se esperaba %v", tc.raw, cfg.JobsEnabled, tc.want)
+		}
+	}
+}

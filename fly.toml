@@ -50,6 +50,12 @@ primary_region = 'gru'
   # 0 la máquina se apaga sin tráfico y el scheduler deja de existir: el aviso de
   # cuotas de las 9:00 no sale si nadie entró a esa hora. `auto_start_machines`
   # despierta con una request entrante, pero nada la despierta por horario.
+  #
+  # Hoy el cron está apagado (JOBS_ENABLED, ver internal/config) y aun así el
+  # piso se queda en 1: es lo que permite prenderlo con un `fly secrets set` sin
+  # tocar nada más. Una máquina encendida no despierta Neon por sí sola —el pool
+  # no retiene conexiones y /health no toca la base—; lo que la despertaba era el
+  # cron.
   min_machines_running = 1
   processes = ['app']
 
