@@ -246,7 +246,9 @@ func TestListTeams_ReturnsTeams(t *testing.T) {
 
 func TestUpdateFeeConfig_Success(t *testing.T) {
 	teamRepo := &testutil.MockTeamRepo{}
-	h := newTeamHandler(teamRepo, &testutil.MockMembershipRepo{})
+	memberRepo := &testutil.MockMembershipRepo{}
+	h := newTeamHandler(teamRepo, memberRepo)
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "dt", "team-1").Return(managerOf("team-1", "dt"), nil)
 
 	expected := &team.Team{ID: "team-1", FeeAmount: 20000, FeeDueDay: 10}
 	teamRepo.On("UpdateFeeConfig", mock.Anything, "team-1",
@@ -256,6 +258,7 @@ func TestUpdateFeeConfig_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "dt")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/teams/team-1/fee-config",
 		strings.NewReader(`{"fee_amount":20000,"fee_due_day":10}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -270,11 +273,14 @@ func TestUpdateFeeConfig_Success(t *testing.T) {
 }
 
 func TestUpdateFeeConfig_InvalidDueDay(t *testing.T) {
-	h := newTeamHandler(&testutil.MockTeamRepo{}, &testutil.MockMembershipRepo{})
+	memberRepo := &testutil.MockMembershipRepo{}
+	h := newTeamHandler(&testutil.MockTeamRepo{}, memberRepo)
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "dt", "team-1").Return(managerOf("team-1", "dt"), nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "dt")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/",
 		strings.NewReader(`{"fee_amount":10000,"fee_due_day":32}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -317,4 +323,27 @@ func TestUpdateFeeConfig_ZeroTurnsTheFeeOff(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	tr.AssertExpectations(t)
+}
+
+// La cuota la configura el manager: el tesorero la cobra, pero no decide cuánto
+// es (`team.settings` en la app).
+func TestUpdateFeeConfig_RejectsTreasurer(t *testing.T) {
+	teamRepo := &testutil.MockTeamRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	h := newTeamHandler(teamRepo, memberRepo)
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "tesorero", "team-1").
+		Return(treasurerOf("team-1", "tesorero", "m-tesorero"), nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "tesorero")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/teams/team-1/fee-config",
+		strings.NewReader(`{"fee_amount":20000,"fee_due_day":10}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateFeeConfig(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	teamRepo.AssertNotCalled(t, "UpdateFeeConfig")
 }

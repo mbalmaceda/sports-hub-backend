@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,7 +41,12 @@ func (c *captureNotifier) SendBatch(_ context.Context, msgs []notify.Message) er
 // captureHistory hace de tabla de notificaciones, con la deduplicación incluida:
 // es justamente lo que estos trabajos apoyan, así que un doble sin ella no
 // probaría nada.
+//
+// El lock no es decorativo: `EmitAsync` escribe desde una goroutine por evento,
+// y un trabajo que emite para varios partidos a la vez escribía el mapa en
+// paralelo. Sin él, el test caía de vez en cuando con "concurrent map writes".
 type captureHistory struct {
+	mu     sync.Mutex
 	drafts []notification.Draft
 	keys   map[string]bool
 }
@@ -50,6 +56,8 @@ func newHistory() *captureHistory { return &captureHistory{keys: map[string]bool
 func (h *captureHistory) CreateMany(
 	_ context.Context, drafts []notification.Draft,
 ) ([]*notification.Notification, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	out := make([]*notification.Notification, 0, len(drafts))
 	for _, d := range drafts {
 		key := d.RecipientUserID + "|" + d.DedupeKey

@@ -38,22 +38,32 @@ type competitionAccess struct {
 
 // require devuelve nil si quien pide puede ver la competencia, o el error de
 // autorización que le corresponde para que `abortAuthz` lo traduzca.
-func (a competitionAccess) require(c *gin.Context, comp *competition.Competition) error {
+//
+// Devuelve también las entradas, que tuvo que leer para decidir: quien las
+// necesita después (`ListEntries`) las reutiliza en vez de volver a pedirlas.
+func (a competitionAccess) require(c *gin.Context, comp *competition.Competition) ([]*competition.Entry, error) {
 	if _, ok := currentUserID(c); !ok {
-		return ErrNoClaims
+		return nil, ErrNoClaims
 	}
 	ctx := c.Request.Context()
 
 	// Los equipos que la juegan: el que la organiza y los que tienen entrada.
 	// La consulta de entradas es una más sobre un índice, y es lo que permite
 	// que el rival de un amistoso lea la competencia que no organizó.
-	teamIDs := []string{comp.OrganizerTeamID}
 	entries, err := a.competitions.ListEntries(ctx, comp.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	// Sin repetidos: el organizador siempre tiene además su propia entrada, y
+	// sin este corte su membresía se buscaba dos veces —y cuando no era de ahí,
+	// fallaba dos veces— en cada lectura de la competencia.
+	teamIDs := []string{comp.OrganizerTeamID}
+	seen := map[string]bool{comp.OrganizerTeamID: true}
 	for _, entry := range entries {
-		teamIDs = append(teamIDs, entry.TeamID)
+		if !seen[entry.TeamID] {
+			seen[entry.TeamID] = true
+			teamIDs = append(teamIDs, entry.TeamID)
+		}
 	}
 
 	// Se recorren todos los equipos antes de decidir: alguien puede ser
@@ -67,12 +77,12 @@ func (a competitionAccess) require(c *gin.Context, comp *competition.Competition
 			continue
 		}
 		if !m.IsGuest() {
-			return nil
+			return entries, nil
 		}
 		guestMembershipID = m.ID
 	}
 	if guestMembershipID == "" {
-		return ErrNotMember
+		return nil, ErrNotMember
 	}
 
 	// Invitado: entra solo si alguna de sus convocatorias es a un partido de
@@ -80,15 +90,15 @@ func (a competitionAccess) require(c *gin.Context, comp *competition.Competition
 	// de cada partido, que serían tantas consultas como partidos tenga.
 	callups, err := a.matches.ListCallupsByMembership(ctx, guestMembershipID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(callups) == 0 {
-		return ErrGuestScope
+		return nil, ErrGuestScope
 	}
 
 	matches, err := a.matches.ListByCompetition(ctx, comp.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	belongs := make(map[string]bool, len(matches))
 	for _, m := range matches {
@@ -96,26 +106,36 @@ func (a competitionAccess) require(c *gin.Context, comp *competition.Competition
 	}
 	for _, callup := range callups {
 		if belongs[callup.MatchID] {
-			return nil
+			return entries, nil
 		}
 	}
-	return ErrGuestScope
+	return nil, ErrGuestScope
 }
 
 // requireByID carga la competencia y valida el acceso de una. Devuelve false si
 // ya respondió —404 si no existe, 403 si quien pide no la juega—.
 func (a competitionAccess) requireByID(c *gin.Context, competitionID string) (*competition.Competition, bool) {
+	comp, _, ok := a.requireByIDWithEntries(c, competitionID)
+	return comp, ok
+}
+
+// requireByIDWithEntries es `requireByID` devolviendo además las entradas que
+// leyó para autorizar.
+func (a competitionAccess) requireByIDWithEntries(
+	c *gin.Context, competitionID string,
+) (*competition.Competition, []*competition.Entry, bool) {
 	comp, err := a.competitions.FindByID(c.Request.Context(), competitionID)
 	if errors.Is(err, competition.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "competition not found"})
-		return nil, false
+		return nil, nil, false
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return nil, false
+		return nil, nil, false
 	}
-	if abortAuthz(c, a.require(c, comp)) {
-		return nil, false
+	entries, err := a.require(c, comp)
+	if abortAuthz(c, err) {
+		return nil, nil, false
 	}
-	return comp, true
+	return comp, entries, true
 }

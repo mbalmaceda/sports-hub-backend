@@ -128,7 +128,15 @@ func (h *RosterHandler) GetMember(c *gin.Context) {
 	c.JSON(http.StatusOK, m)
 }
 
+// AddMember POST /teams/:id/roster
+//
+// Lo usa solo el manager. Sin esta guarda bastaba con tener sesión para
+// sumarse a cualquier equipo con el rol que uno quisiera, manager incluido.
 func (h *RosterHandler) AddMember(c *gin.Context) {
+	if _, err := h.authz.requireRole(c, c.Param("id"), membership.RoleManager); abortAuthz(c, err) {
+		return
+	}
+
 	var req struct {
 		UserID        string          `json:"user_id"       binding:"required"`
 		Role          membership.Role `json:"role"`
@@ -239,7 +247,12 @@ func (h *RosterHandler) PromoteGuest(c *gin.Context) {
 	c.JSON(http.StatusOK, member)
 }
 
+// UpdateStatus PATCH /teams/:id/roster/:membershipId/status
 func (h *RosterHandler) UpdateStatus(c *gin.Context) {
+	if !h.requireManagedMember(c) {
+		return
+	}
+
 	var req struct {
 		Status membership.Status `json:"status" binding:"required"`
 	}
@@ -261,9 +274,11 @@ func (h *RosterHandler) UpdateStatus(c *gin.Context) {
 }
 
 // UpdateRole PATCH /teams/:id/roster/:membershipId/role
-// TODO: restringir a memberships con role=manager del equipo (ver auth.ClaimsFromContext)
-// una vez que haya middleware de autorización por rol.
 func (h *RosterHandler) UpdateRole(c *gin.Context) {
+	if !h.requireManagedMember(c) {
+		return
+	}
+
 	var req struct {
 		Role membership.Role `json:"role" binding:"required"`
 	}
@@ -291,4 +306,26 @@ func (h *RosterHandler) UpdateRole(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, member)
+}
+
+// requireManagedMember es la guarda de todo lo que el manager le hace a una
+// membresía ajena: exige ser manager del equipo de la ruta y que la membresía
+// sea **de ese** equipo. Lo segundo es lo que se olvida: sin eso, el manager de
+// un equipo cambia el rol o da de baja a alguien de otro, con solo conocer el
+// id. Escribe la respuesta y devuelve false si hay que cortar.
+func (h *RosterHandler) requireManagedMember(c *gin.Context) bool {
+	teamID := c.Param("id")
+	if _, err := h.authz.requireRole(c, teamID, membership.RoleManager); abortAuthz(c, err) {
+		return false
+	}
+	target, err := h.repo.GetMemberByID(c.Request.Context(), c.Param("membershipId"))
+	if errors.Is(err, membership.ErrNotFound) || (err == nil && target.TeamID != teamID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
+		return false
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return false
+	}
+	return true
 }

@@ -92,6 +92,37 @@ func (a teamAuthorizer) requireRole(
 	return nil, ErrInsufficient
 }
 
+// financeRoles son los roles que manejan la plata del equipo: lo que en la app
+// es `finances.view`, `fees.viewOthers` y `payments.record`
+// (src/domain/auth/permissions.ts). Las dos puntas tienen que decir lo mismo,
+// o la app ofrece una pantalla que el servidor rechaza.
+var financeRoles = []membership.Role{membership.RoleManager, membership.RoleTreasurer}
+
+// requireFinances exige manejar la plata del equipo.
+func (a teamAuthorizer) requireFinances(c *gin.Context, teamID string) (*membership.Membership, error) {
+	return a.requireRole(c, teamID, financeRoles...)
+}
+
+// requireSelfOrFinances deja pasar al dueño de la membresía o a quien maneja la
+// plata del equipo. Es la regla de toda deuda individual —cuota o cobro—: la ve
+// el interesado y quien tiene que cobrarla, nadie más. Mismo criterio que
+// `ChargeHandler.ListByMembership`.
+func (a teamAuthorizer) requireSelfOrFinances(c *gin.Context, teamID, membershipID string) error {
+	me, err := a.requireMembership(c, teamID)
+	if err != nil {
+		return err
+	}
+	if me.ID == membershipID {
+		return nil
+	}
+	for _, role := range financeRoles {
+		if me.Role == role {
+			return nil
+		}
+	}
+	return ErrInsufficient
+}
+
 // abortAuthz traduce el error de autorización a la respuesta HTTP y corta.
 // Devuelve true si efectivamente cortó, para usarlo como guarda en una línea.
 func abortAuthz(c *gin.Context, err error) bool {

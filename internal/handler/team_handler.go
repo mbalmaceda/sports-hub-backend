@@ -145,6 +145,11 @@ func (h *TeamHandler) UpdateFeeConfig(c *gin.Context) {
 		si hay cuota configurada: sin poder volver a cero, esa sección no se
 		puede apagar. Es el mismo motivo por el que el marcador recibe `*int`.
 	*/
+	// Es `team.settings` en la app: solo el manager.
+	if _, err := h.authz.requireRole(c, c.Param("id"), membership.RoleManager); abortAuthz(c, err) {
+		return
+	}
+
 	var req struct {
 		FeeAmount *int64 `json:"fee_amount" binding:"required"`
 		FeeDueDay int    `json:"fee_due_day" binding:"required,min=1,max=31"`

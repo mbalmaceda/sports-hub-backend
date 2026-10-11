@@ -108,6 +108,23 @@ type Callup struct {
 	RespondedAt  *time.Time   `json:"responded_at,omitempty"`
 }
 
+/*
+CallupWithMatch es una convocatoria con su partido adentro.
+
+Es lo que devuelve el historial de una persona (`GET /memberships/:id/callups`).
+Sin el partido, quien quería mostrar "cuándo y dónde" tenía que pedir un
+`GET /matches/:id` por fila: el inicio del invitado —que no puede leer el
+calendario del equipo— hacía exactamente eso, una consulta HTTP y dos a cuatro
+a la base por cada convocatoria.
+
+Los campos de la convocatoria van al primer nivel, como antes, y `match` se
+suma: un cliente que no lo conoce lo ignora.
+*/
+type CallupWithMatch struct {
+	Callup
+	Match *Match `json:"match"`
+}
+
 // PendingCallup es una citación sin responder, con lo que hace falta para
 // avisarle a esa persona sin volver a consultar nada.
 type PendingCallup struct {
@@ -157,6 +174,9 @@ type Repository interface {
 
 	ListCallups(ctx context.Context, matchID string) ([]*Callup, error)
 	ListCallupsByMembership(ctx context.Context, membershipID string) ([]*Callup, error)
+	// ListCallupsWithMatchByMembership es lo mismo con el partido de cada una,
+	// en una sola consulta. Ver `CallupWithMatch`.
+	ListCallupsWithMatchByMembership(ctx context.Context, membershipID string) ([]*CallupWithMatch, error)
 	// CallUp es idempotente: a quien ya fue convocado no se le borra la
 	// respuesta. Tocar "Convocar a todos" no puede deshacer los "voy" recibidos.
 	CallUp(ctx context.Context, matchID string, membershipIDs []string) ([]*Callup, error)

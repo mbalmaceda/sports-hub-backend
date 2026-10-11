@@ -224,6 +224,41 @@ func (r *MatchRepository) ListCallupsByMembership(ctx context.Context, membershi
 	return collectCallups(rows)
 }
 
+func (r *MatchRepository) ListCallupsWithMatchByMembership(
+	ctx context.Context, membershipID string,
+) ([]*match.CallupWithMatch, error) {
+	const q = `
+		SELECT cu.id, cu.match_id, cu.membership_id, cu.status, cu.called_at, cu.responded_at,
+		       m.id, m.competition_id, m.home_team_id, m.away_team_id, m.scheduled_at, m.venue, m.status,
+		       m.home_score, m.away_score, m.result_recorded_at, m.result_recorded_by, m.created_at
+		FROM match_callups cu
+		JOIN matches m ON m.id = cu.match_id
+		WHERE cu.membership_id = $1
+		ORDER BY cu.called_at DESC`
+	rows, err := r.pool.Query(ctx, q, membershipID)
+	if err != nil {
+		return nil, fmt.Errorf("match.ListCallupsWithMatchByMembership: %w", err)
+	}
+	defer rows.Close()
+	return collect(rows, func(row pgx.Row) (*match.CallupWithMatch, error) {
+		out := &match.CallupWithMatch{Match: &match.Match{}}
+		cu, m := &out.Callup, out.Match
+		var venue, recordedBy *string
+		err := row.Scan(
+			&cu.ID, &cu.MatchID, &cu.MembershipID, &cu.Status, &cu.CalledAt, &cu.RespondedAt,
+			&m.ID, &m.CompetitionID, &m.HomeTeamID, &m.AwayTeamID, &m.ScheduledAt, &venue, &m.Status,
+			&m.HomeScore, &m.AwayScore, &m.ResultRecordedAt, &recordedBy, &m.CreatedAt,
+		)
+		if venue != nil {
+			m.Venue = *venue
+		}
+		if recordedBy != nil {
+			m.ResultRecordedBy = *recordedBy
+		}
+		return out, err
+	})
+}
+
 // CallUp convoca a varios jugadores de una vez.
 //
 // El ON CONFLICT DO NOTHING es la clave: a quien ya fue convocado no se le toca

@@ -90,34 +90,54 @@ func (r *FeeRepository) Create(ctx context.Context, o *fee.Obligation) error {
 // BulkCreate genera cuotas para múltiples memberships de una vez.
 // Usa ON CONFLICT DO NOTHING para que sea idempotente.
 func (r *FeeRepository) BulkCreate(ctx context.Context, obligations []*fee.Obligation) (int, error) {
+	if len(obligations) == 0 {
+		return 0, nil
+	}
+
+	/*
+		Un solo INSERT con `unnest` en vez de uno por cuota.
+
+		Antes era una transacción con un INSERT por miembro: un plantel de
+		veinte eran veintidós idas y vueltas a la base para una sola acción del
+		manager. Una sentencia es atómica igual, así que la transacción también
+		sobraba.
+	*/
+	n := len(obligations)
+	teamIDs := make([]string, n)
+	membershipIDs := make([]string, n)
+	years := make([]int32, n)
+	months := make([]int32, n)
+	amounts := make([]int64, n)
+	currencies := make([]string, n)
+	dueDates := make([]string, n)
+	statuses := make([]string, n)
+	for i, o := range obligations {
+		teamIDs[i] = o.TeamID
+		membershipIDs[i] = o.MembershipID
+		years[i] = int32(o.PeriodYear)
+		months[i] = int32(o.PeriodMonth)
+		amounts[i] = o.Amount
+		currencies[i] = o.Currency
+		// Como texto y no como instante: un `timestamptz` pasado a `date` se lee
+		// en la zona de la sesión, y medianoche UTC en Chile es el día anterior.
+		dueDates[i] = o.DueDate.Format(time.DateOnly)
+		statuses[i] = string(o.Status)
+	}
+
 	const q = `
 		INSERT INTO fee_obligations
 			(team_id, membership_id, period_year, period_month, amount, currency, due_date, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (membership_id, period_year, period_month) DO NOTHING`
-
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("fee.BulkCreate: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	created := 0
-	for _, o := range obligations {
-		tag, err := tx.Exec(ctx, q,
-			o.TeamID, o.MembershipID, o.PeriodYear, o.PeriodMonth,
-			o.Amount, o.Currency, o.DueDate, o.Status,
+		SELECT * FROM unnest(
+			$1::uuid[], $2::uuid[], $3::int4[]::int2[], $4::int4[]::int2[],
+			$5::int8[], $6::text[], $7::date[], $8::text[]
 		)
-		if err != nil {
-			return 0, fmt.Errorf("fee.BulkCreate: insert: %w", err)
-		}
-		created += int(tag.RowsAffected())
+		ON CONFLICT (membership_id, period_year, period_month) DO NOTHING`
+	tag, err := r.pool.Exec(ctx, q,
+		teamIDs, membershipIDs, years, months, amounts, currencies, dueDates, statuses)
+	if err != nil {
+		return 0, fmt.Errorf("fee.BulkCreate: %w", err)
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("fee.BulkCreate: commit: %w", err)
-	}
-	return created, nil
+	return int(tag.RowsAffected()), nil
 }
 
 func (r *FeeRepository) UpdateStatus(ctx context.Context, id string, status fee.Status, paidAt *time.Time) error {

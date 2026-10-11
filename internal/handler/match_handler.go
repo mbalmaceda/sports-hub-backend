@@ -186,13 +186,13 @@ func (h *MatchHandler) ListCallupsByMembership(c *gin.Context) {
 		return
 	}
 
-	callups, err := h.matches.ListCallupsByMembership(c.Request.Context(), membershipID)
+	callups, err := h.matches.ListCallupsWithMatchByMembership(c.Request.Context(), membershipID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list callups"})
 		return
 	}
 	if callups == nil {
-		callups = []*match.Callup{}
+		callups = []*match.CallupWithMatch{}
 	}
 	c.JSON(http.StatusOK, callups)
 }
@@ -411,7 +411,18 @@ func (h *MatchHandler) notifyCallupProgress(
 		}
 	}
 
-	who := personName(ctx, h.memberships, membershipID)
+	// El nombre y los managers salen del plantel que ya se leyó para contar:
+	// pedirlos aparte eran dos consultas más por cada respuesta a la citación.
+	who := ""
+	for _, member := range roster {
+		if member.MembershipID == membershipID {
+			who = member.FullName
+			break
+		}
+	}
+	if who == "" {
+		who = personName(ctx, h.memberships, membershipID)
+	}
 	body := who + " se bajó. Van " + strconv.Itoa(confirmed) + " de " + strconv.Itoa(total) + " confirmados."
 	if attending {
 		body = who + " confirmó. Van " + strconv.Itoa(confirmed) + " de " + strconv.Itoa(total) + "."
@@ -430,7 +441,7 @@ func (h *MatchHandler) notifyCallupProgress(
 		// que ya sabe que ahora son 9.
 		DedupeKey:  notification.DedupeKey(string(notification.TypeCallupResponses), m.ID),
 		OnConflict: notification.ConflictRewrite,
-		Recipients: notify.To(managerIDs(ctx, h.memberships, teamID, actorUserID)...),
+		Recipients: notify.To(membership.ManagerUserIDs(roster, actorUserID)...),
 	})
 }
 
@@ -683,7 +694,14 @@ func (h *MatchHandler) loadMatchForMember(c *gin.Context) (*match.Match, bool) {
 		return nil, false
 	}
 
-	for _, teamID := range []string{m.HomeTeamID, m.AwayTeamID} {
+	// En un partido interno los dos lados son el mismo equipo: revisarlo dos
+	// veces era la misma consulta repetida, y para quien no es de ahí, el mismo
+	// rechazo dos veces.
+	teamIDs := []string{m.HomeTeamID}
+	if m.AwayTeamID != m.HomeTeamID {
+		teamIDs = append(teamIDs, m.AwayTeamID)
+	}
+	for _, teamID := range teamIDs {
 		if _, err := h.requireMatchParticipant(c, teamID, m); err == nil {
 			return m, true
 		}

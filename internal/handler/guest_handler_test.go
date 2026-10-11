@@ -1000,9 +1000,10 @@ func TestGuestCanListTheirOwnCallups(t *testing.T) {
 		Role: membership.RolePlayer, Kind: membership.KindGuest,
 		Status: membership.StatusActive,
 	}, nil)
-	mr.On("ListCallupsByMembership", mock.Anything, "m-guest").Return([]*match.Callup{
-		{ID: "cu-1", MatchID: "match-1", MembershipID: "m-guest", Status: match.CallupConfirmed},
-	}, nil)
+	mr.On("ListCallupsWithMatchByMembership", mock.Anything, "m-guest").Return([]*match.CallupWithMatch{{
+		Callup: match.Callup{ID: "cu-1", MatchID: "match-1", MembershipID: "m-guest", Status: match.CallupConfirmed},
+		Match:  &match.Match{ID: "match-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Venue: "Cancha 3"},
+	}}, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1013,6 +1014,21 @@ func TestGuestCanListTheirOwnCallups(t *testing.T) {
 	h.ListCallupsByMembership(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+
+	/*
+		El partido viene adentro de cada convocatoria, con los campos de la
+		convocatoria al primer nivel como siempre. Es lo que le ahorra al inicio
+		del invitado un `GET /matches/:id` por fila, y lo que una app vieja —que
+		no conoce `match`— sigue leyendo igual.
+	*/
+	var body []map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body, 1)
+	assert.Equal(t, "match-1", body[0]["match_id"])
+	assert.Equal(t, "confirmed", body[0]["status"])
+	embedded, ok := body[0]["match"].(map[string]any)
+	require.True(t, ok, "la convocatoria trae su partido")
+	assert.Equal(t, "Cancha 3", embedded["venue"])
 }
 
 // Las de un compañero, no: el historial de asistencia es información de

@@ -229,6 +229,14 @@ func (m *MockMatchRepo) ListCallupsByMembership(ctx context.Context, membershipI
 	return args.Get(0).([]*match.Callup), args.Error(1)
 }
 
+func (m *MockMatchRepo) ListCallupsWithMatchByMembership(ctx context.Context, membershipID string) ([]*match.CallupWithMatch, error) {
+	args := m.Called(ctx, membershipID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*match.CallupWithMatch), args.Error(1)
+}
+
 func (m *MockMatchRepo) CallUp(ctx context.Context, matchID string, membershipIDs []string) ([]*match.Callup, error) {
 	args := m.Called(ctx, matchID, membershipIDs)
 	if args.Get(0) == nil {

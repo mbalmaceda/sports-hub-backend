@@ -18,14 +18,50 @@ type FeeHandler struct {
 	fees        fee.Repository
 	memberships membership.Repository
 	teams       team.Repository
+	authz       teamAuthorizer
 }
 
 func NewFeeHandler(fees fee.Repository, memberships membership.Repository, teams team.Repository) *FeeHandler {
-	return &FeeHandler{fees: fees, memberships: memberships, teams: teams}
+	return &FeeHandler{
+		fees:        fees,
+		memberships: memberships,
+		teams:       teams,
+		authz:       teamAuthorizer{memberships: memberships},
+	}
+}
+
+// loadAuthorized busca la cuota y deja pasar a su dueño o a quien maneja la
+// plata del equipo. El equipo sale de la propia fila porque la ruta corta
+// (/fees/:id) no lo trae. Escribe la respuesta y devuelve nil si hay que cortar.
+func (h *FeeHandler) loadAuthorized(c *gin.Context, id string) *fee.Obligation {
+	o, err := h.fees.FindByID(c.Request.Context(), id)
+	if errors.Is(err, fee.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "fee not found"})
+		return nil
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return nil
+	}
+	if abortAuthz(c, h.authz.requireSelfOrFinances(c, o.TeamID, o.MembershipID)) {
+		return nil
+	}
+	return o
 }
 
 // ListByTeamAndPeriod GET /teams/:id/fees?year=2026&month=7
+//
+// Exige ser del equipo, no manejar la plata, y es a propósito. Las cuotas
+// ajenas son `fees.viewOthers` en la app, y lo correcto sería `requireFinances`.
+// Pero hasta la 1.0.x la pestaña Jugadores pide este listado para todos los
+// roles y trata un 403 como error de la pantalla entera: cerrarlo ahora deja a
+// cada jugador sin plantel. Cuando la versión que lo pide solo con
+// `fees.viewOthers` sea la mínima en Play, esto pasa a `requireFinances`.
 func (h *FeeHandler) ListByTeamAndPeriod(c *gin.Context) {
+	if _, err := h.authz.requireMember(c, c.Param("id")); abortAuthz(c, err) {
+		return
+	}
+
 	year, err := strconv.Atoi(c.Query("year"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "year is required"})
@@ -50,7 +86,21 @@ func (h *FeeHandler) ListByTeamAndPeriod(c *gin.Context) {
 
 // ListByMembership GET /memberships/:membershipId/fees
 func (h *FeeHandler) ListByMembership(c *gin.Context) {
-	obligations, err := h.fees.ListByMembership(c.Request.Context(), c.Param("membershipId"))
+	membershipID := c.Param("membershipId")
+	target, err := h.memberships.GetMemberByID(c.Request.Context(), membershipID)
+	if errors.Is(err, membership.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "membership not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	if abortAuthz(c, h.authz.requireSelfOrFinances(c, target.TeamID, membershipID)) {
+		return
+	}
+
+	obligations, err := h.fees.ListByMembership(c.Request.Context(), membershipID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list fees"})
 		return
@@ -63,6 +113,18 @@ func (h *FeeHandler) ListByMembership(c *gin.Context) {
 
 // GetByID GET /fees/:id
 func (h *FeeHandler) GetByID(c *gin.Context) {
+	o := h.loadAuthorized(c, c.Param("id"))
+	if o == nil {
+		return
+	}
+	c.JSON(http.StatusOK, o)
+}
+
+// UpdateStatus PATCH /fees/:id/status
+//
+// Cambiar el estado de una cuota es cobrarla o perdonarla: `payments.record`, no
+// alcanza con ser el dueño.
+func (h *FeeHandler) UpdateStatus(c *gin.Context) {
 	o, err := h.fees.FindByID(c.Request.Context(), c.Param("id"))
 	if errors.Is(err, fee.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "fee not found"})
@@ -72,11 +134,10 @@ func (h *FeeHandler) GetByID(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
-	c.JSON(http.StatusOK, o)
-}
+	if _, err := h.authz.requireFinances(c, o.TeamID); abortAuthz(c, err) {
+		return
+	}
 
-// UpdateStatus PATCH /fees/:id/status
-func (h *FeeHandler) UpdateStatus(c *gin.Context) {
 	var req struct {
 		Status fee.Status `json:"status" binding:"required"`
 		PaidAt *time.Time `json:"paid_at"`
@@ -97,18 +158,22 @@ func (h *FeeHandler) UpdateStatus(c *gin.Context) {
 		return
 	}
 
-	o, err := h.fees.FindByID(c.Request.Context(), c.Param("id"))
+	updated, err := h.fees.FindByID(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"status": "updated"})
 		return
 	}
-	c.JSON(http.StatusOK, o)
+	c.JSON(http.StatusOK, updated)
 }
 
 // Generate POST /teams/:id/fees/generate
 // Genera cuotas mensuales para todos los miembros activos del equipo.
 // Es idempotente: si ya existen para ese período, las omite.
 func (h *FeeHandler) Generate(c *gin.Context) {
+	if _, err := h.authz.requireFinances(c, c.Param("id")); abortAuthz(c, err) {
+		return
+	}
+
 	var req struct {
 		PeriodYear  int `json:"period_year"  binding:"required"`
 		PeriodMonth int `json:"period_month" binding:"required,min=1,max=12"`

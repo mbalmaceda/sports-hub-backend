@@ -403,13 +403,10 @@ func (h *CompetitionHandler) Create(c *gin.Context) {
 
 // ListEntries GET /competitions/:competitionId/entries
 func (h *CompetitionHandler) ListEntries(c *gin.Context) {
-	if _, ok := h.access.requireByID(c, c.Param("competitionId")); !ok {
-		return
-	}
-
-	entries, err := h.competitions.ListEntries(c.Request.Context(), c.Param("competitionId"))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list entries"})
+	// Las entradas ya las leyó el chequeo de acceso: pedirlas de nuevo era la
+	// misma consulta dos veces en cada request.
+	_, entries, ok := h.access.requireByIDWithEntries(c, c.Param("competitionId"))
+	if !ok {
 		return
 	}
 	if entries == nil {

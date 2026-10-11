@@ -33,6 +33,13 @@ func memberOf(repo *testutil.MockMembershipRepo, teamID, userID string) {
 	}, nil)
 }
 
+// asManager deja a "dt" como manager de teamID y lo pone en la sesión: es quien
+// puede sumar gente al plantel y cambiarle el rol o el estado.
+func asManager(repo *testutil.MockMembershipRepo, c *gin.Context, teamID string) {
+	repo.On("FindByUserAndTeam", mock.Anything, "dt", teamID).Return(managerOf(teamID, "dt"), nil)
+	withClaims(c, "dt")
+}
+
 func TestListByTeam_Success(t *testing.T) {
 	repo := &testutil.MockMembershipRepo{}
 	h := newRosterHandler(repo)
@@ -149,6 +156,7 @@ func TestAddMember_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	asManager(repo, c, "team-1")
 	c.Request = httptest.NewRequest(http.MethodPost, "/teams/team-1/roster",
 		strings.NewReader(`{"user_id":"user-1","jersey_number":9,"position":"Mediocampista"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -174,6 +182,7 @@ func TestAddMember_DefaultsToPlayerRole(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	asManager(repo, c, "team-1")
 	// No incluye "role" en el body
 	c.Request = httptest.NewRequest(http.MethodPost, "/",
 		strings.NewReader(`{"user_id":"user-1"}`))
@@ -195,6 +204,7 @@ func TestAddMember_DuplicateConflict(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	asManager(repo, c, "team-1")
 	c.Request = httptest.NewRequest(http.MethodPost, "/",
 		strings.NewReader(`{"user_id":"user-1"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -214,6 +224,7 @@ func TestAddMember_InvalidRole(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	asManager(repo, c, "team-1")
 	c.Request = httptest.NewRequest(http.MethodPost, "/",
 		strings.NewReader(`{"user_id":"user-1","role":"superadmin"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -295,11 +306,14 @@ func TestUpdateStatus_Success(t *testing.T) {
 	repo := &testutil.MockMembershipRepo{}
 	h := newRosterHandler(repo)
 
+	repo.On("GetMemberByID", mock.Anything, "m-1").
+		Return(&membership.TeamMember{MembershipID: "m-1", TeamID: "team-1"}, nil)
 	repo.On("UpdateStatus", mock.Anything, "m-1", membership.StatusSuspended).Return(nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "membershipId", Value: "m-1"}}
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}, {Key: "membershipId", Value: "m-1"}}
+	asManager(repo, c, "team-1")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/",
 		strings.NewReader(`{"status":"suspended"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -314,13 +328,14 @@ func TestUpdateRole_Success(t *testing.T) {
 	repo := &testutil.MockMembershipRepo{}
 	h := newRosterHandler(repo)
 
-	promoted := &membership.TeamMember{MembershipID: "m-1", Role: membership.RoleTreasurer}
+	promoted := &membership.TeamMember{MembershipID: "m-1", TeamID: "team-1", Role: membership.RoleTreasurer}
 	repo.On("UpdateRole", mock.Anything, "m-1", membership.RoleTreasurer).Return(nil)
 	repo.On("GetMemberByID", mock.Anything, "m-1").Return(promoted, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "membershipId", Value: "m-1"}}
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}, {Key: "membershipId", Value: "m-1"}}
+	asManager(repo, c, "team-1")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/",
 		strings.NewReader(`{"role":"treasurer"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -335,11 +350,15 @@ func TestUpdateRole_Success(t *testing.T) {
 }
 
 func TestUpdateRole_InvalidRole(t *testing.T) {
-	h := newRosterHandler(&testutil.MockMembershipRepo{})
+	repo := &testutil.MockMembershipRepo{}
+	h := newRosterHandler(repo)
+	repo.On("GetMemberByID", mock.Anything, "m-1").
+		Return(&membership.TeamMember{MembershipID: "m-1", TeamID: "team-1"}, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "membershipId", Value: "m-1"}}
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}, {Key: "membershipId", Value: "m-1"}}
+	asManager(repo, c, "team-1")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/",
 		strings.NewReader(`{"role":"owner"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -392,4 +411,65 @@ func TestListMine_ReturnsEmptyWhenNoTeams(t *testing.T) {
 	var body []any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Empty(t, body)
+}
+
+// El agujero que motivó la guarda: con sesión y el id de un equipo ajeno, uno
+// se sumaba a sí mismo como manager.
+func TestAddMember_RejectsOutsiderMakingThemselvesManager(t *testing.T) {
+	repo := &testutil.MockMembershipRepo{}
+	h := newRosterHandler(repo)
+
+	repo.On("FindByUserAndTeam", mock.Anything, "intruso", "team-1").Return(nil, membership.ErrNotFound)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "intruso")
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/team-1/roster",
+		strings.NewReader(`{"user_id":"intruso","role":"manager"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.AddMember(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	repo.AssertNotCalled(t, "Create")
+}
+
+// Un jugador del equipo tampoco se asciende solo.
+func TestUpdateRole_RejectsPlayer(t *testing.T) {
+	repo := &testutil.MockMembershipRepo{}
+	h := newRosterHandler(repo)
+	memberOf(repo, "team-1", "jugador")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}, {Key: "membershipId", Value: "m-jugador"}}
+	withClaims(c, "jugador")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"role":"manager"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateRole(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	repo.AssertNotCalled(t, "UpdateRole")
+}
+
+// El manager de un equipo no toca membresías de otro, aunque conozca el id.
+func TestUpdateStatus_RejectsMemberOfAnotherTeam(t *testing.T) {
+	repo := &testutil.MockMembershipRepo{}
+	h := newRosterHandler(repo)
+	repo.On("GetMemberByID", mock.Anything, "m-ajena").
+		Return(&membership.TeamMember{MembershipID: "m-ajena", TeamID: "team-2"}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}, {Key: "membershipId", Value: "m-ajena"}}
+	asManager(repo, c, "team-1")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"status":"inactive"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateStatus(c)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	repo.AssertNotCalled(t, "UpdateStatus")
 }

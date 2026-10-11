@@ -20,7 +20,12 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/testutil"
 )
 
+// newFeeHandler deja al usuario "tesorero" con ese rol en cualquier equipo:
+// generar y cobrar cuotas es de quien maneja la plata. Los tests de rechazo
+// arman su propio repo.
 func newFeeHandler(feeRepo *testutil.MockFeeRepo, memberRepo *testutil.MockMembershipRepo, teamRepo *testutil.MockTeamRepo) *handler.FeeHandler {
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "tesorero", mock.Anything).
+		Return(treasurerOf("", "tesorero", "m-tesorero"), nil)
 	return handler.NewFeeHandler(feeRepo, memberRepo, teamRepo)
 }
 
@@ -51,6 +56,7 @@ func TestGenerateFees_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: teamID}}
+	withClaims(c, "tesorero")
 	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+teamID+"/generate-fees",
 		strings.NewReader(`{"period_year":2026,"period_month":7}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -96,6 +102,7 @@ func TestGenerateFees_OnlyForMembersWhoPlay(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: teamID}}
+	withClaims(c, "tesorero")
 	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+teamID+"/generate-fees",
 		strings.NewReader(`{"period_year":2026,"period_month":7}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -139,6 +146,7 @@ func TestGenerateFees_SkipsGuests(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: teamID}}
+	withClaims(c, "tesorero")
 	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+teamID+"/generate-fees",
 		strings.NewReader(`{"period_year":2026,"period_month":7}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -168,6 +176,7 @@ func TestGenerateFees_SkipsInactiveMembers(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: teamID}}
+	withClaims(c, "tesorero")
 	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"period_year":2026,"period_month":1}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -193,6 +202,7 @@ func TestGenerateFees_TeamNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: "nonexistent"}}
+	withClaims(c, "tesorero")
 	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"period_year":2026,"period_month":7}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -227,6 +237,7 @@ func TestGenerateFees_FeeUsesTeamConfig(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: teamID}}
+	withClaims(c, "tesorero")
 	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"period_year":2026,"period_month":3}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -243,7 +254,7 @@ func TestGenerateFees_FeeUsesTeamConfig(t *testing.T) {
 
 func TestUpdateFeeStatus_PaidSetsTimestamp(t *testing.T) {
 	feeRepo := &testutil.MockFeeRepo{}
-	h := handler.NewFeeHandler(feeRepo, &testutil.MockMembershipRepo{}, &testutil.MockTeamRepo{})
+	h := newFeeHandler(feeRepo, &testutil.MockMembershipRepo{}, &testutil.MockTeamRepo{})
 
 	feeID := "fee-1"
 	updated := &fee.Obligation{ID: feeID, Status: fee.StatusPaid}
@@ -254,6 +265,7 @@ func TestUpdateFeeStatus_PaidSetsTimestamp(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Params = gin.Params{{Key: "id", Value: feeID}}
+	withClaims(c, "tesorero")
 	c.Request = httptest.NewRequest(http.MethodPatch, "/fees/"+feeID+"/status",
 		strings.NewReader(`{"status":"paid"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -263,4 +275,92 @@ func TestUpdateFeeStatus_PaidSetsTimestamp(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	// Verifica que paid_at no sea nil cuando status=paid
 	feeRepo.AssertCalled(t, "UpdateStatus", mock.Anything, feeID, fee.StatusPaid, mock.AnythingOfType("*time.Time"))
+}
+
+// Las cuotas del equipo no las ve alguien de afuera. (Un jugador del equipo
+// todavía sí: ver el comentario de `ListByTeamAndPeriod`.)
+func TestListFeesByTeam_RejectsOutsider(t *testing.T) {
+	feeRepo := &testutil.MockFeeRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "forastero", "team-1").
+		Return(nil, membership.ErrNotFound)
+	h := handler.NewFeeHandler(feeRepo, memberRepo, &testutil.MockTeamRepo{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "team-1"}}
+	withClaims(c, "forastero")
+	c.Request = httptest.NewRequest(http.MethodGet, "/teams/team-1/fees?year=2026&month=10", nil)
+
+	h.ListByTeamAndPeriod(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	feeRepo.AssertNotCalled(t, "ListByTeamAndPeriod")
+}
+
+// La cuota propia sí se ve, aunque quien la mira sea jugador.
+func TestListFeesByMembership_AllowsOwner(t *testing.T) {
+	feeRepo := &testutil.MockFeeRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	memberRepo.On("GetMemberByID", mock.Anything, "m-jugador").
+		Return(&membership.TeamMember{MembershipID: "m-jugador", TeamID: "team-1"}, nil)
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "jugador", "team-1").
+		Return(playerOf("team-1", "jugador"), nil)
+	feeRepo.On("ListByMembership", mock.Anything, "m-jugador").Return([]*fee.Obligation{}, nil)
+	h := handler.NewFeeHandler(feeRepo, memberRepo, &testutil.MockTeamRepo{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "membershipId", Value: "m-jugador"}}
+	withClaims(c, "jugador")
+	c.Request = httptest.NewRequest(http.MethodGet, "/memberships/m-jugador/fees", nil)
+
+	h.ListByMembership(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// La de un compañero, no.
+func TestListFeesByMembership_RejectsTeammate(t *testing.T) {
+	feeRepo := &testutil.MockFeeRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	memberRepo.On("GetMemberByID", mock.Anything, "m-otro").
+		Return(&membership.TeamMember{MembershipID: "m-otro", TeamID: "team-1"}, nil)
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "jugador", "team-1").
+		Return(playerOf("team-1", "jugador"), nil)
+	h := handler.NewFeeHandler(feeRepo, memberRepo, &testutil.MockTeamRepo{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "membershipId", Value: "m-otro"}}
+	withClaims(c, "jugador")
+	c.Request = httptest.NewRequest(http.MethodGet, "/memberships/m-otro/fees", nil)
+
+	h.ListByMembership(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	feeRepo.AssertNotCalled(t, "ListByMembership")
+}
+
+// Marcar una cuota como pagada es cobrarla: el dueño no puede hacerlo solo.
+func TestUpdateFeeStatus_RejectsPlayer(t *testing.T) {
+	feeRepo := &testutil.MockFeeRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	feeRepo.On("FindByID", mock.Anything, "fee-1").
+		Return(&fee.Obligation{ID: "fee-1", TeamID: "team-1", MembershipID: "m-jugador"}, nil)
+	memberRepo.On("FindByUserAndTeam", mock.Anything, "jugador", "team-1").
+		Return(playerOf("team-1", "jugador"), nil)
+	h := handler.NewFeeHandler(feeRepo, memberRepo, &testutil.MockTeamRepo{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "fee-1"}}
+	withClaims(c, "jugador")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/fees/fee-1/status", strings.NewReader(`{"status":"paid"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UpdateStatus(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	feeRepo.AssertNotCalled(t, "UpdateStatus")
 }

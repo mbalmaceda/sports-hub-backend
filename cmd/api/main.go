@@ -161,7 +161,7 @@ func main() {
 	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo, firebaseAuth)
 	rosterHandler := handler.NewRosterHandler(rosterRepo, firebaseAuth)
 	feeHandler := handler.NewFeeHandler(feeRepo, rosterRepo, teamRepo)
-	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo)
+	paymentHandler := handler.NewPaymentHandler(paymentRepo, feeRepo, rosterRepo)
 	competitionHandler := handler.NewCompetitionHandler(
 		competitionRepo, rosterRepo, matchRepo, teamRepo,
 		// Todo lo que hay que deshacer al cancelar un partido. Ver `Cancel`.

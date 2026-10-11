@@ -235,6 +235,10 @@ son opcionales y viajan vacías si el alta no las pidió.
 cuota deja de ver la pestaña de Cuotas en el móvil. Por eso el monto viaja como puntero del
 lado del servidor — con un `int64` a secas, el `required` de gin rechazaba el cero y la
 cuota no se podía desactivar nunca.
+
+Solo el **manager** (`team.settings` en la app). El tesorero cobra la cuota pero no
+decide cuánto es.
+
 **Body**
 ```json
 { "fee_amount": 15000, "fee_due_day": 10 }
@@ -280,7 +284,11 @@ club en un solo request, y ninguna pantalla lo usa desde la lista.
 ---
 
 ### POST `/teams/:id/roster`
-Agrega un usuario existente al equipo.
+Agrega un usuario existente al equipo. Solo el **manager**.
+
+Hasta octubre de 2026 no validaba nada: con sesión y el id de un equipo ajeno,
+cualquiera se sumaba a sí mismo con `"role": "manager"`. La app no lo usa —el
+plantel crece por invitación y por solicitud—, pero el endpoint sigue expuesto.
 
 **Body**
 ```json
@@ -292,6 +300,7 @@ Agrega un usuario existente al equipo.
 ```
 
 **Response 201** — objeto TeamMember  
+**Response 403** — no es manager del equipo  
 **Response 409** `{ "error": "user is already a member of this team" }`
 
 ---
@@ -316,7 +325,14 @@ pertenecer al equipo de esa membresía, con cualquier rol.
 
 Valores válidos: `active` | `inactive` | `suspended`
 
-**Response 200** `{ "status": "updated" }`
+Lo mismo vale para `PATCH /teams/:id/roster/:membershipId/role`: los dos son del
+**manager** y la membresía tiene que ser **de ese** `:id`. Lo segundo es lo que se
+olvida: sin eso, el manager de un equipo cambia el rol de alguien de otro con solo
+conocer el id.
+
+**Response 200** `{ "status": "updated" }`  
+**Response 403** — no es manager del equipo  
+**Response 404** `{ "error": "member not found" }` — no existe, o es de otro equipo
 
 ---
 
@@ -363,6 +379,8 @@ Valores válidos: `active` | `inactive` | `suspended`
 ### POST `/teams/:id/generate-fees`
 Genera cuotas mensuales para todos los miembros activos. Usa `fee_amount`, `fee_due_day` y `currency` del equipo. Es idempotente.
 
+Manager y tesorero. Las inserta en una sola sentencia (`unnest`), no una por miembro.
+
 **Body**
 ```json
 { "period_year": 2026, "period_month": 7 }
@@ -377,6 +395,11 @@ Genera cuotas mensuales para todos los miembros activos. Usa `fee_amount`, `fee_
 
 ### GET `/teams/:id/fees?year=2026&month=7`
 Lista cuotas del equipo para un período.
+
+Exige **ser del equipo**, con cualquier rol. Lo correcto sería manager o tesorero
+—las cuotas ajenas son `fees.viewOthers` en la app—, pero hasta la 1.0.x la pestaña
+Jugadores lo pide para todos y trata un 403 como error de la pantalla entera. Se
+cierra cuando la versión que lo pide solo con ese permiso sea la mínima en Play.
 
 **Response 200**
 ```json
@@ -402,17 +425,25 @@ Lista cuotas del equipo para un período.
 ### GET `/memberships/:membershipId/fees`
 Lista todas las cuotas de un miembro (ordenadas por período desc).
 
+Las ve **el dueño** o quien maneja la plata del equipo (manager y tesorero). Es la
+misma regla que `GET /memberships/:membershipId/charges`.
+
 **Response 200** — array de FeeObligation
 
 ---
 
 ### GET `/fees/:id`
+El dueño de la cuota, o manager y tesorero de su equipo.
+
 **Response 200** — objeto FeeObligation
 
 ---
 
 ### PATCH `/fees/:id/status`
 Si `status = "paid"` y no se envía `paid_at`, se usa `NOW()` automáticamente.
+
+Manager y tesorero: cambiar el estado es cobrarla o perdonarla, y eso no lo decide
+el dueño.
 
 **Body**
 ```json
@@ -426,6 +457,10 @@ Valores válidos: `pending` | `paid` | `overdue` | `exempted`
 ---
 
 ## Payments 🔒
+
+Todo lo de pagos es de **manager y tesorero** del equipo, con una excepción: el
+dueño de una cuota puede leer el pago de esa cuota (`GET /fees/:id/payment`, y
+`GET /payments/:id` cuando el pago cuelga de una cuota suya).
 
 ### POST `/teams/:id/payments`
 Registra un pago. Si incluye `obligation_id`, la cuota se marca como `paid` automáticamente.
@@ -445,6 +480,8 @@ Registra un pago. Si incluye `obligation_id`, la cuota se marca como `paid` auto
 
 `method`: `cash` | `transfer` | `online` | `other`  
 `recorded_by` se toma del JWT del usuario autenticado.
+
+Si viene `obligation_id`, la cuota tiene que ser **de este** equipo: si no, 404.
 
 **Response 201** — objeto Payment
 
@@ -540,6 +577,29 @@ El invitado entra por su convocatoria y no por su membresía, y eso es lo que lo
 acota: necesita leer la competencia porque de ahí sale su cuota por jugador, pero
 una membresía de invitado por sí sola no abre ninguna otra. La regla vive en un
 solo lugar, `internal/handler/competition_access.go`.
+
+### GET `/memberships/:membershipId/callups`
+Las convocatorias de una persona, la más reciente primero. El plantel lee las de
+cualquiera del equipo; el invitado, solo las suyas.
+
+Cada convocatoria trae **su partido adentro** (`match`, el mismo objeto que
+`GET /matches/:matchId`). Los campos de la convocatoria siguen al primer nivel, así
+que un cliente que no conoce `match` lo ignora. Existe porque el inicio del
+invitado —que no puede leer el calendario del equipo— pedía un `GET /matches/:id`
+por cada convocatoria.
+
+```json
+[
+  {
+    "id": "uuid",
+    "match_id": "uuid",
+    "membership_id": "uuid",
+    "status": "confirmed",
+    "called_at": "...",
+    "match": { "id": "uuid", "scheduled_at": "...", "venue": "Cancha 3", "status": "scheduled", "...": "..." }
+  }
+]
+```
 
 **Response 403** `{ "error": "you are not a member of this team" }` |
 `{ "error": "your invitation only covers the match you were called up to" }`
