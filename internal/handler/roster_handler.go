@@ -81,8 +81,9 @@ func (h *RosterHandler) ListByTeam(c *gin.Context) {
 }
 
 // ListMine GET /me/memberships
-// Lista los equipos (y el rol en cada uno) del usuario autenticado.
-// El mobile la usa para resolver la sesión activa tras login/refresh.
+// Lista los equipos activos (y el rol en cada uno) del usuario autenticado:
+// primero los propios, después del más antiguo al más nuevo. El mobile la usa
+// para resolver la sesión y para el selector de equipo.
 func (h *RosterHandler) ListMine(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {

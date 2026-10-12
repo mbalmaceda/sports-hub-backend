@@ -552,6 +552,66 @@ func TestListChargesByPeriod_NonMemberIsRejected(t *testing.T) {
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
+// ─── Cobros de una competencia ───────────────────────────────────────────────
+
+func listCompetitionChargesRequest(c *gin.Context) {
+	c.Params = gin.Params{{Key: "competitionId", Value: "comp-1"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/competitions/comp-1/charges", nil)
+}
+
+// En un amistoso los dos planteles comparten la fuente del cargo. Que el rival
+// haya confirmado primero no puede dejar al plantel propio sin ver lo suyo, y
+// lo del rival no se le muestra.
+func TestListChargesByCompetition_OnlyOwnTeamEvenIfRivalFirst(t *testing.T) {
+	h, d := newChargeHandler()
+
+	d.charges.On("ListBySource", mock.Anything,
+		charge.Source{Type: charge.SourceMatchCost, ID: "comp-1"}).
+		Return([]*charge.Charge{
+			{ID: "ch-away", TeamID: awayTeam, MembershipID: "m-rival", Amount: 2000},
+			{ID: "ch-home", TeamID: homeTeam, MembershipID: "m-user-player", Amount: 2000},
+		}, nil)
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-player", awayTeam).
+		Return(nil, membership.ErrNotFound)
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-player", homeTeam).
+		Return(playerOf(homeTeam, "user-player"), nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-player")
+	listCompetitionChargesRequest(c)
+
+	h.ListByCompetition(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got, 1)
+	assert.Equal(t, "ch-home", got[0]["id"])
+}
+
+// Quien no es de ninguno de los dos equipos no ve nada.
+func TestListChargesByCompetition_StrangerIsRejected(t *testing.T) {
+	h, d := newChargeHandler()
+
+	d.charges.On("ListBySource", mock.Anything, mock.Anything).
+		Return([]*charge.Charge{
+			{ID: "ch-away", TeamID: awayTeam, MembershipID: "m-rival", Amount: 2000},
+			{ID: "ch-home", TeamID: homeTeam, MembershipID: "m-home", Amount: 2000},
+		}, nil)
+	d.members.On("FindByUserAndTeam", mock.Anything, "user-ajeno", mock.Anything).
+		Return(nil, membership.ErrNotFound)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-ajeno")
+	listCompetitionChargesRequest(c)
+
+	h.ListByCompetition(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
 // ─── Condonar ────────────────────────────────────────────────────────────────
 
 func TestWaiveCharge_ManagerClosesAPendingCharge(t *testing.T) {

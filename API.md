@@ -317,6 +317,27 @@ pertenecer al equipo de esa membresía, con cualquier rol.
 
 ---
 
+### GET `/me/memberships`
+
+Mis equipos: las membresías **activas** del usuario autenticado, en equipos
+activos. Es de donde la app resuelve la sesión y arma el selector de equipo.
+
+**El orden es parte del contrato**: primero los equipos propios
+(`teams.owner_user_id`), después el resto por `joined_at` ascendente. La app no
+reordena; con ese orden lista los equipos y elige con cuál abrir.
+
+**Response 200** — `TeamMember[]` con tres campos más que solo vienen acá:
+
+```json
+[{
+  "membership_id": "uuid", "team_id": "uuid", "role": "manager", "kind": "member",
+  "status": "active", "joined_at": "2026-03-01T12:00:00Z",
+  "team_name": "FC Riverside", "team_sport_id": "football", "is_owner": true
+}]
+```
+
+`is_owner` se omite cuando es `false`.
+
 ### PATCH `/teams/:id/roster/:membershipId/status`
 **Body**
 ```json
@@ -804,9 +825,16 @@ ninguna garantía que existiera.
 
 ## Charges 🔒
 
-Cobros: plata que un miembro le debe al equipo. Hoy los produce el reparto del
-costo de cancha de un partido (`source_type: "match_cost"`, con la competencia
-como `source_id`).
+Cobros: plata que un miembro le debe al equipo. Hoy los produce el costo de
+cancha de un partido (`source_type: "match_cost"`, con la competencia como
+`source_id`). El cargo de cada jugador nace cuando confirma la citación o canjea
+un enlace de invitado, con la `player_share` fijada al crear la competencia, y
+se puede pagar en el acto. El reparto del manager es opcional: completa a los
+confirmados que no tengan cargo y les avisa.
+
+`GET /competitions/:competitionId/charges` devuelve solo los cargos de los
+equipos donde quien consulta es miembro: en un amistoso los dos planteles
+comparten la fuente, y lo del rival no se muestra. 403 si no es de ninguno.
 
 Ya existían y no están documentados en detalle acá: `POST /teams/:id/charges`
 (reparte), `GET /competitions/:competitionId/charges`, `GET
@@ -1308,8 +1336,9 @@ aparato es de quien lo está usando ahora.
 **Payload del push**
 
 ```json
-{ "type": "friendly_challenged", "entity_id": "uuid", "notification_id": "uuid" }
+{ "type": "friendly_challenged", "entity_id": "uuid", "notification_id": "uuid", "team_id": "uuid" }
 ```
 
 `notification_id` va para que tocar el push marque leída la misma fila que
-tocarla en la lista.
+tocarla en la lista. `team_id` es el equipo del destinatario al que se refiere el
+aviso: quien está en varios equipos tiene que abrirlo parado en ese, con su rol.

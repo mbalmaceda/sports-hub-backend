@@ -28,6 +28,11 @@ type Team struct {
 	Currency    string    `json:"currency"`
 	IsActive    bool      `json:"is_active"`
 	CreatedAt   time.Time `json:"created_at"`
+	// OwnerUserID es de quién es el equipo, aparte del rol (ver migración 011).
+	// No sale en el JSON: el directorio `GET /teams` lo leen todos, y la única
+	// pregunta que la app hace es "¿es mío?", que contesta `is_owner` en
+	// `GET /me/memberships`.
+	OwnerUserID string `json:"-"`
 }
 
 // BankAccount son los datos a los que los jugadores le transfieren al equipo.

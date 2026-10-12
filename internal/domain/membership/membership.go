@@ -103,6 +103,12 @@ type TeamMember struct {
 	Position      string    `json:"position,omitempty"`
 	Status        Status    `json:"status"`
 	JoinedAt      time.Time `json:"joined_at"`
+
+	// Solo los llena `ListByUser` (GET /me/memberships): son "mis equipos", y
+	// el selector de equipo necesita nombrarlos sin pedir el directorio entero.
+	TeamName    string `json:"team_name,omitempty"`
+	TeamSportID string `json:"team_sport_id,omitempty"`
+	IsOwner     bool   `json:"is_owner,omitempty"`
 }
 
 type Repository interface {

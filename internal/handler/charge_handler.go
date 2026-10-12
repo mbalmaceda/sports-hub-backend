@@ -47,7 +47,13 @@ func NewChargeHandler(
 	}
 }
 
-// ListBySource GET /competitions/:competitionId/charges
+// ListByCompetition GET /competitions/:competitionId/charges
+//
+// Devuelve solo los cargos de los equipos de quien consulta. En un amistoso los
+// dos planteles cuelgan de la misma fuente (`match_cost` + competencia), y antes
+// esto validaba contra el equipo del primer cargo y devolvía todo: si un rival
+// confirmaba primero, el plantel propio entero recibía 403 y nadie podía pagar
+// su parte; si no, el manager veía la deuda del otro equipo sumada a la suya.
 func (h *ChargeHandler) ListByCompetition(c *gin.Context) {
 	charges, err := h.charges.ListBySource(c.Request.Context(), charge.Source{
 		Type: charge.SourceMatchCost,
@@ -57,15 +63,30 @@ func (h *ChargeHandler) ListByCompetition(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list charges"})
 		return
 	}
-	if charges == nil {
-		charges = []*charge.Charge{}
-	}
-	if len(charges) > 0 {
-		if _, err := h.authz.requireMember(c, charges[0].TeamID); abortAuthz(c, err) {
-			return
+
+	// Se pregunta una vez por equipo y no por cargo: son a lo más dos, y en un
+	// partido interno uno solo.
+	allowed := make(map[string]bool, 2)
+	var denied error
+	own := []*charge.Charge{}
+	for _, ch := range charges {
+		ok, seen := allowed[ch.TeamID]
+		if !seen {
+			_, err := h.authz.requireMember(c, ch.TeamID)
+			ok = err == nil
+			allowed[ch.TeamID] = ok
+			if err != nil {
+				denied = err
+			}
+		}
+		if ok {
+			own = append(own, ch)
 		}
 	}
-	c.JSON(http.StatusOK, charges)
+	if len(charges) > 0 && len(own) == 0 && abortAuthz(c, denied) {
+		return
+	}
+	c.JSON(http.StatusOK, own)
 }
 
 // ListByTeamAndPeriod GET /teams/:id/charges?year=2026&month=8

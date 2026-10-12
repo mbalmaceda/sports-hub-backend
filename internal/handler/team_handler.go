@@ -29,7 +29,7 @@ func NewTeamHandler(repo team.Repository, memberships membership.Repository, fb 
 }
 
 // Create POST /teams
-// El creador queda asignado automáticamente como manager del equipo.
+// El creador queda asignado automáticamente como manager y como dueño del equipo.
 func (h *TeamHandler) Create(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
@@ -72,6 +72,7 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		FeeDueDay:   req.FeeDueDay,
 		Currency:    req.Currency,
 		IsActive:    true,
+		OwnerUserID: claims.UserID,
 	}
 	if err := h.repo.Create(c.Request.Context(), t); err != nil {
 		if errors.Is(err, team.ErrNameTaken) {

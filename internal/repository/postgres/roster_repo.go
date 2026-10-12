@@ -111,17 +111,50 @@ func (r *RosterRepository) ListByTeam(ctx context.Context, teamID string) ([]*me
 	return members, nil
 }
 
-// ListByUser lista todos los equipos (y el rol en cada uno) del usuario autenticado.
-// El mobile la usa para resolver la sesión activa tras login/refresh.
+// myTeamsQuery es "mis equipos": las membresías activas del usuario con el
+// nombre del equipo y si es el dueño.
+//
+// El orden es una regla de producto y vive acá, en un solo lugar: **primero
+// los equipos propios, después el resto del más antiguo al más nuevo**. La app
+// no reordena — lo usa tal cual para la lista del selector y para elegir el
+// equipo activo por defecto, y esas dos cosas no pueden discrepar.
+//
+// Solo las activas: una membresía dada de baja (o de la que el usuario salió)
+// no es un equipo al que se pueda entrar.
+const myTeamsQuery = `
+	SELECT
+		m.id, m.user_id, m.team_id,
+		u.name, COALESCE(u.avatar_url,''), u.email, COALESCE(u.phone,''),
+		m.role, m.kind, m.plays_as_player, m.jersey_number, COALESCE(m.position,''), m.status, m.joined_at,
+		t.name, t.sport_id, (t.owner_user_id IS NOT NULL AND t.owner_user_id = m.user_id)
+	FROM memberships m
+	JOIN users u ON u.id = m.user_id
+	JOIN teams t ON t.id = m.team_id
+	WHERE m.user_id = $1 AND m.status = 'active' AND t.is_active
+	ORDER BY (t.owner_user_id IS NOT NULL AND t.owner_user_id = m.user_id) DESC, m.joined_at ASC`
+
+func scanMyTeam(row pgx.Row) (*membership.TeamMember, error) {
+	m := &membership.TeamMember{}
+	err := row.Scan(
+		&m.MembershipID, &m.UserID, &m.TeamID,
+		&m.FullName, &m.AvatarURL, &m.Email, &m.Phone,
+		&m.Role, &m.Kind, &m.PlaysAsPlayer, &m.JerseyNumber, &m.Position, &m.Status, &m.JoinedAt,
+		&m.TeamName, &m.TeamSportID, &m.IsOwner,
+	)
+	return m, err
+}
+
+// ListByUser lista los equipos activos (y el rol en cada uno) del usuario
+// autenticado, en el orden de `myTeamsQuery`. El mobile la usa para resolver
+// la sesión y armar el selector de equipo.
 func (r *RosterRepository) ListByUser(ctx context.Context, userID string) ([]*membership.TeamMember, error) {
-	q := teamMemberQuery + ` WHERE m.user_id = $1 ORDER BY m.joined_at`
-	rows, err := r.pool.Query(ctx, q, userID)
+	rows, err := r.pool.Query(ctx, myTeamsQuery, userID)
 	if err != nil {
 		return nil, fmt.Errorf("membership.ListByUser: %w", err)
 	}
 	defer rows.Close()
 
-	members, err := collect(rows, scanTeamMember)
+	members, err := collect(rows, scanMyTeam)
 	if err != nil {
 		return nil, fmt.Errorf("membership.ListByUser scan: %w", err)
 	}

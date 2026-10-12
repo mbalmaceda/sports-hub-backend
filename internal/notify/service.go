@@ -249,11 +249,19 @@ Postgres, que no se pueden reescribir.
 `notification_id` va porque tocar el push tiene que marcarla leída igual que
 tocarla en la lista. Sin él, la campana seguiría con el punto puesto después de
 haber leído el aviso.
+
+`team_id` va porque una persona puede estar en varios equipos y la app abre todo
+con el rol del equipo activo. Un aviso del equipo B tocado con A activo abriría
+la pantalla con los permisos de A; con el id, la app cambia de equipo antes de
+navegar.
 */
 func payload(n *notification.Notification) map[string]string {
 	data := map[string]string{
 		"type":            string(n.Type),
 		"notification_id": n.ID,
+	}
+	if n.TeamID != "" {
+		data["team_id"] = n.TeamID
 	}
 	if n.EntityID != "" {
 		data["entity_id"] = n.EntityID

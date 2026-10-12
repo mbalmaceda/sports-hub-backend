@@ -54,12 +54,12 @@ func isNameTakenConflict(err error) bool {
 
 func (r *TeamRepository) Create(ctx context.Context, t *team.Team) error {
 	const q = `
-		INSERT INTO teams (name, sport_id, club_id, category, city, description, logo_url, fee_amount, fee_due_day, currency, is_active)
-		VALUES ($1, $2, NULLIF($3,''), $4, $5, $6, NULLIF($7,''), $8, $9, $10, $11)
+		INSERT INTO teams (name, sport_id, club_id, category, city, description, logo_url, fee_amount, fee_due_day, currency, is_active, owner_user_id)
+		VALUES ($1, $2, NULLIF($3,''), $4, $5, $6, NULLIF($7,''), $8, $9, $10, $11, NULLIF($12,'')::uuid)
 		RETURNING id, created_at`
 	err := r.pool.QueryRow(ctx, q,
 		t.Name, t.SportID, t.ClubID, t.Category, t.City, t.Description, t.LogoURL,
-		t.FeeAmount, t.FeeDueDay, t.Currency, t.IsActive,
+		t.FeeAmount, t.FeeDueDay, t.Currency, t.IsActive, t.OwnerUserID,
 	).Scan(&t.ID, &t.CreatedAt)
 	if isNameTakenConflict(err) {
 		return team.ErrNameTaken
