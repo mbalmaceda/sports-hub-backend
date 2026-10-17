@@ -69,8 +69,11 @@ type Competition struct {
 	StartAt         *time.Time `json:"start_at,omitempty"`
 	EndAt           *time.Time `json:"end_at,omitempty"`
 	Venue           string     `json:"venue,omitempty"`
-	PlayersPerSide  *int       `json:"players_per_side,omitempty"`
-	VenueCost       *VenueCost `json:"venue_cost,omitempty"`
+	// VenueID es la cancha del catálogo, cuando se eligió una. `Venue` sigue
+	// llevando el nombre: es lo que leen las pantallas y las versiones viejas.
+	VenueID        string     `json:"venue_id,omitempty"`
+	PlayersPerSide *int       `json:"players_per_side,omitempty"`
+	VenueCost      *VenueCost `json:"venue_cost,omitempty"`
 	/*
 		PlayerShare es cuánto le toca poner a cada jugador, en la moneda de
 		VenueCost. Se calcula una sola vez, al crear la competencia, y desde ahí

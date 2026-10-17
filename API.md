@@ -694,9 +694,9 @@ cambio de fórmula alterara en silencio lo que ya se le cobró a la gente.
 **Response 400** `{ "error": "match date must be in the future" }`  
 **Response 403** — no sos manager del equipo
 
-Desde acá se sigue con lo que ya existe: convocar (`POST /matches/:matchId/callups`)
-y repartir el costo (`POST /teams/:id/charges` con
-`source: { "type": "match_cost", "id": "<competitionId>" }`).
+Desde acá se sigue con lo que ya existe: convocar (`POST /matches/:matchId/callups`).
+El cobro de cada uno nace cuando confirma; a los que deben se les recuerda con
+`POST /teams/:id/charge-reminders`.
 
 ### PUT `/matches/:matchId/result`
 El marcador, que es lo que cierra el partido. Requiere rol `manager` en alguno de
@@ -741,6 +741,103 @@ al partido, y el marcador empieza justo ahí.
 **Response 403** — no sos manager de ninguno de los dos equipos
 
 ---
+
+## Buscar rival 🔒
+
+Un amistoso publicado **sin rival**: fecha, cancha y costo ya resueltos, falta con
+quién. Los equipos cercanos lo ven en un mapa y piden jugarlo. Cada pedido es un
+desafío normal, y desde ahí sigue por `/friendlies/:challengeId` (contraofertar,
+aceptar, rechazar) como cualquier otro.
+
+**El retador es el que publicó, no el que pidió.** Quien publica reservó la
+cancha, y el retador es el organizador: el que la paga y le cobra la mitad al
+rival al aceptar (`ensureVenueSettlement`). Por eso el desafío que nace de un
+pedido tiene `challenger_team_id` = publicador, `challenged_team_id` = quien
+pide, y la primera propuesta es de quien pide: le toca contestar al publicador.
+
+Aceptar un pedido cierra la búsqueda (`matched`) y rechaza los demás pedidos,
+con aviso `friendly_declined`. El cierre va **antes** de crear el partido y es
+el candado: de dos aceptaciones simultáneas, la segunda recibe 409.
+
+**Una búsqueda vence a las 24 horas de publicada** (`expires_at`), o a la hora
+del partido si llega antes. Se cuenta desde la creación del registro, no hacia
+atrás desde el partido: una publicación para dentro de tres semanas no se queda
+tres semanas en el mapa. El desafío de cada pedido vence a más tardar junto con
+su búsqueda, porque aceptar pasa por cerrarla y una vencida ya no se cierra.
+
+### GET `/friendly-searches?team_id&lat&lng&radius_km`
+
+Búsquedas abiertas cuya cancha cae dentro del radio, de la más cercana a la más
+lejana. `radius_km` por defecto 5, tope 10. Exige ser del equipo de `team_id`
+(cualquier rol, sin invitados): con eso se llena `requested_challenge_id`, el
+pedido abierto de ese equipo si ya pidió. Lo vencido (`expires_at`) no aparece
+aunque la barrida no lo haya tocado.
+
+```json
+[{
+  "id": "…", "team_id": "…", "team_name": "Los Halcones",
+  "sport_id": "football7", "players_per_side": 7,
+  "start_at": "2026-10-16T22:00:00Z",
+  "venue": { "id": "…", "name": "Complejo Maipú", "lat": -33.5106, "lng": -70.757, "verified": true },
+  "venue_cost": { "amount": 28000, "currency": "CLP" },
+  "message": "Buscamos rival parejo", "status": "open",
+  "created_at": "2026-10-15T18:00:00Z", "expires_at": "2026-10-16T18:00:00Z",
+  "distance_km": 1.4, "requested_challenge_id": "…"
+}]
+```
+
+### POST `/teams/:id/friendly-searches`
+
+Manager. `{sport_id, players_per_side (1–30), start_at, venue_id, venue_cost?, message?}`.
+`venue_id` tiene que existir en el catálogo (400 si no). Devuelve la búsqueda,
+con `expires_at` = ahora + 24 h, acotado a `start_at`.
+
+### POST `/friendly-searches/:searchId/requests`
+
+Manager de `team_id`. `{team_id, message?}`. Crea competencia (borrador,
+organizada por el publicador, con `venue_id`), desafío y primera propuesta, y le
+avisa al publicador con `friendly_requested`. Devuelve lo mismo que crear un
+amistoso: `{competition, challenge, proposal}`.
+
+| Código | Cuándo |
+|---|---|
+| 400 | pedir la propia |
+| 409 | ya no está abierta o venció; o el equipo ya tiene un pedido abierto (trae `challenge_id`) |
+
+### POST `/friendly-searches/:searchId/cancel`
+
+Manager del publicador. Deja la búsqueda `cancelled` y rechaza los pedidos
+abiertos, cancelando sus competencias.
+
+## Canchas 🔒
+
+El catálogo con coordenadas. Lo cura ZPORTS (`verified: true`) y lo completan
+los managers cuando su cancha no está (`verified: false`, sirve igual).
+
+### GET `/venues?q&lat&lng`
+
+Autocompletado: hasta 8 canchas cuyo nombre contiene `q` (sin importar tildes ni
+mayúsculas), verificadas primero y después las más cercanas al punto. Sin `q`,
+las más cercanas.
+
+### POST `/venues`
+
+`{name, lat, lng}`. Sugerir una cancha. Si ya hay una con el mismo nombre
+normalizado a menos de 300 m devuelve esa con **200**; si no, la crea sin
+verificar con **201**. Limitado a 20 por hora por usuario.
+
+### Admin — `X-Admin-Token`
+
+Fuera del grupo con sesión. Lo protege el secreto `ADMIN_TOKEN` (mínimo 32
+caracteres); sin él, todo `/admin` responde **404**. Es una llave de servicio
+para cargar el catálogo con `curl` mientras no exista un admin web.
+
+| Endpoint | Qué |
+|---|---|
+| `GET /admin/venues?q&verified` | lista, las sin verificar primero |
+| `POST /admin/venues` `{name, lat, lng}` | crea una cancha ya verificada |
+| `PATCH /admin/venues/:venueId` `{name?, lat?, lng?, verified?}` | corrige o verifica |
+| `POST /admin/venues/:venueId/merge` `{into_id}` | mueve todo a `into_id` y borra la de origen (204) |
 
 ## Liquidaciones entre equipos 🔒
 
@@ -829,17 +926,52 @@ Cobros: plata que un miembro le debe al equipo. Hoy los produce el costo de
 cancha de un partido (`source_type: "match_cost"`, con la competencia como
 `source_id`). El cargo de cada jugador nace cuando confirma la citación o canjea
 un enlace de invitado, con la `player_share` fijada al crear la competencia, y
-se puede pagar en el acto. El reparto del manager es opcional: completa a los
-confirmados que no tengan cargo y les avisa.
+se puede pagar en el acto. **Un cobro existe si y solo si confirmaste**: quien se
+baja pierde el suyo (si no lo pagó), y a quien no contestó no se le cobra nada.
 
 `GET /competitions/:competitionId/charges` devuelve solo los cargos de los
 equipos donde quien consulta es miembro: en un amistoso los dos planteles
 comparten la fuente, y lo del rival no se muestra. 403 si no es de ninguno.
 
-Ya existían y no están documentados en detalle acá: `POST /teams/:id/charges`
-(reparte), `GET /competitions/:competitionId/charges`, `GET
-/memberships/:membershipId/charges`, `POST /charges/:chargeId/receipt`,
-`/confirm` y `/reject`, y `GET /teams/:id/funds`.
+Ya existían y no están documentados en detalle acá: `GET
+/competitions/:competitionId/charges`, `GET /memberships/:membershipId/charges`,
+`POST /charges/:chargeId/receipt`, `/confirm` y `/reject`.
+
+### POST `/teams/:id/charge-reminders`
+Les recuerda a los confirmados del propio equipo (invitados incluidos) que deben
+su parte de la cancha. Requiere `manager` o `treasurer`.
+
+```json
+{ "source_type": "match_cost", "source_id": "<competitionId>" }
+```
+
+No crea deuda a quien no confirmó ni borra nada. Lo único que crea es el cobro de
+un confirmado que no lo tenía (la creación al confirmar falla en silencio para
+no tumbar la respuesta a la citación). El aviso (`charge_reminder`) va a los que
+tienen el cobro `pending`, cada uno al suyo, menos a quien toca el botón, y a lo
+más **uno por persona, partido y día** (`America/Santiago`): el segundo toque del
+día no escribe fila ni manda push.
+
+**Response 200**
+```json
+{ "notified": 4, "pending": 4, "charges": [ /* Charge del propio equipo */ ] }
+```
+`notified` es a cuántos les llegó un aviso nuevo con este toque; `pending`, cuántos
+deben. `notified: 0` con `pending > 0` significa que ya se les recordó hoy.
+
+**Response 409** — la competencia no tiene cuota por jugador, o su partido está
+cancelado.
+
+`POST /teams/:id/charges` es el mismo handler, para la app 1.0.x. Antes repartía:
+le cobraba también a los citados que no contestaron y, en un amistoso, borraba
+los pendientes del rival. Se saca cuando la versión nueva sea la mínima en Play.
+
+### GET `/teams/:id/funds`
+Lo que cada partido **ya jugado** dejó para el equipo: lo cobrado a los
+confirmados (pagado o no, sin anulados) menos lo que al equipo le toca poner
+del lugar —la mitad, o el lugar entero en un partido interno—. Negativo si fueron
+menos que la nómina. Se deriva de los cobros; no hay tabla (la 012 borró
+`team_funds`). Excluye partidos cancelados y los que todavía no empiezan.
 
 ### GET `/teams/:id/charges?year=2026&month=8`
 Los cobros del equipo en un mes. Lo lee cualquier miembro. Sin `year`/`month`
@@ -1253,12 +1385,14 @@ pantalla.
 | `friendly_countered` | desafío | managers del lado que no contraofertó |
 | `friendly_accepted` | **partido** | managers del otro lado |
 | `friendly_declined` | desafío | managers del otro lado |
+| `friendly_requested` | desafío | managers del equipo que publicó la búsqueda (otro equipo pidió jugarla) |
 | `tournament_invited` | competencia | managers del equipo invitado |
 | `tournament_answered` | competencia | managers del organizador |
 | `match_callup` | partido | cada convocado |
 | `callup_responses` | partido | managers — **una fila por partido, reescrita** |
 | `match_result` | partido | managers de los dos lados, menos quien lo cargó |
-| `charge_created` | **cobro de cada uno** | los que pagan |
+| `charge_created` | **cobro de cada uno** | legado: lo emitía el reparto, ya nadie |
+| `charge_reminder` | **cobro de cada uno** | confirmados que deben — **uno por día**, menos quien recuerda |
 | `payment_received` | **partido** | manager y tesorero |
 | `team_invitation` | invitación | la persona invitada (todavía sin equipo) |
 | `join_requested` | solicitud | managers |
@@ -1269,8 +1403,8 @@ pantalla.
 | `fee_overdue` | **membresía del que debe** | manager y tesorero — **lo dispara el reloj** |
 | `monthly_summary` | **ninguno** | manager y tesorero — **lo dispara el reloj** |
 
-`charge_created` es el único donde **cada destinatario recibe un `entity_id`
-distinto**: el cobro es de cada uno.
+`charge_reminder` (y antes `charge_created`) es el único donde **cada
+destinatario recibe un `entity_id` distinto**: el cobro es de cada uno.
 
 **Las tres que dispara el reloj** las emite un trabajo periódico
 (`internal/jobs`) y no una acción de nadie, así que no tienen endpoint. Se

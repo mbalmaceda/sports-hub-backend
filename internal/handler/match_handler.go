@@ -344,10 +344,10 @@ func (h *MatchHandler) RespondToCallup(c *gin.Context) {
 	}})
 
 	// Aceptar es comprometerse con la cuota de la cancha, así que el cargo nace
-	// acá y no cuando el manager reparte. La cuota por jugador ya quedó fijada
-	// al crear la competencia, de modo que no hay nada que esperar: el jugador
-	// puede pagar en el acto o dejarlo para después, y el reparto del manager
-	// pasa a ser el recordatorio de los que lo dejaron para después.
+	// acá, y es la única puerta (con el enlace de invitado) por la que nace. La
+	// cuota por jugador ya quedó fijada al crear la competencia: el jugador
+	// puede pagar en el acto o dejarlo para después, y a los que lo dejaron
+	// para después el manager les manda el recordatorio (`RemindPending`).
 	h.syncMatchCharge(c.Request.Context(), m, req.TeamID, me.ID, *req.Attending)
 
 	actor, _ := currentUserID(c)
@@ -625,8 +625,8 @@ func (h *MatchHandler) closeCompetitionIfPlayed(ctx context.Context, competition
 //
 // No devuelve error a propósito: la respuesta a la citación ya está guardada y
 // es lo que el jugador vino a hacer. Fallar acá y devolverle un error lo dejaría
-// creyendo que no quedó anotado, que es peor que un cargo que el reparto del
-// manager va a corregir igual.
+// creyendo que no quedó anotado, que es peor que un cargo faltante: el
+// recordatorio del manager (`RemindPending`) lo completa.
 func (h *MatchHandler) syncMatchCharge(
 	ctx context.Context, m *match.Match, teamID, membershipID string, attending bool,
 ) {
@@ -648,7 +648,7 @@ func (h *MatchHandler) syncMatchCharge(
 // Vive suelta y no como método porque hay dos puertas por las que alguien queda
 // confirmado a un partido —responder la citación y canjear un enlace de
 // invitado— y las dos tienen que cobrar igual. Duplicarla era dejar al parche
-// jugando gratis hasta que el manager se acordara de rehacer el reparto.
+// jugando gratis.
 func ensureMatchCharge(
 	ctx context.Context,
 	charges charge.Repository,

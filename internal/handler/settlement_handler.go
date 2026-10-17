@@ -219,9 +219,9 @@ hacer. Fallar acá y devolver un 500 dejaría a los managers creyendo que el
 partido no se acordó, cuando en Postgres sí está. Lo que se pierde es el aviso
 de la deuda, que se puede volver a generar; lo que se salvaría no existe.
 
-El monto es la mitad del lugar, calculada con el mismo `charge.TeamShare` que
-usa el reparto: si los dos redondearan por su cuenta, quedaría un peso colgado
-que nadie sabría de quién es.
+El monto es la mitad del lugar, calculada con el mismo `charge.TeamShare` con
+el que se derivan los fondos: si los dos redondearan por su cuenta, quedaría un
+peso colgado que nadie sabría de quién es.
 */
 func ensureVenueSettlement(
 	ctx context.Context,

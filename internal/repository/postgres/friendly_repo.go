@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/friendly"
@@ -22,6 +23,7 @@ func NewFriendlyRepository(pool *pgxpool.Pool) *FriendlyRepository {
 
 const challengeColumns = `
 	id, competition_id, challenger_team_id, challenged_team_id, status, expires_at, created_at,
+	COALESCE(search_id::text, '') AS search_id,
 	(SELECT fp.proposed_by_team_id FROM friendly_proposals fp
 		WHERE fp.challenge_id = friendly_challenges.id
 		ORDER BY fp.created_at DESC
@@ -31,7 +33,7 @@ func scanChallenge(row pgx.Row) (*friendly.Challenge, error) {
 	ch := &friendly.Challenge{}
 	err := row.Scan(
 		&ch.ID, &ch.CompetitionID, &ch.ChallengerTeamID, &ch.ChallengedTeamID,
-		&ch.Status, &ch.ExpiresAt, &ch.CreatedAt, &ch.LastProposedByTeamID,
+		&ch.Status, &ch.ExpiresAt, &ch.CreatedAt, &ch.SearchID, &ch.LastProposedByTeamID,
 	)
 	return ch, err
 }
@@ -77,12 +79,18 @@ func (r *FriendlyRepository) Create(ctx context.Context, ch *friendly.Challenge,
 
 	const insertChallenge = `
 		INSERT INTO friendly_challenges
-			(competition_id, challenger_team_id, challenged_team_id, status, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
+			(competition_id, challenger_team_id, challenged_team_id, status, expires_at, search_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, created_at`
 	err = tx.QueryRow(ctx, insertChallenge,
 		ch.CompetitionID, ch.ChallengerTeamID, ch.ChallengedTeamID, ch.Status, ch.ExpiresAt,
+		nullIfEmpty(ch.SearchID),
 	).Scan(&ch.ID, &ch.CreatedAt)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "friendly_challenges_search_requester_key" {
+		return friendly.ErrAlreadyRequested
+	}
 	if err != nil {
 		return fmt.Errorf("friendly.Create: challenge: %w", err)
 	}

@@ -102,6 +102,7 @@ const (
 // repositorios es una invitación a cruzarlos.
 type Deps struct {
 	Friendlies    friendly.Repository
+	Searches      friendly.SearchRepository
 	Competitions  competition.Repository
 	Matches       match.Repository
 	Fees          fee.Repository

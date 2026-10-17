@@ -23,20 +23,23 @@ func NewCompetitionRepository(pool *pgxpool.Pool) *CompetitionRepository {
 const competitionColumns = `
 	id, sport_id, type, name, organizer_team_id, status, start_at, end_at,
 	venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share,
-	is_internal, created_at`
+	is_internal, created_at, venue_id`
 
 func scanCompetition(row pgx.Row) (*competition.Competition, error) {
 	c := &competition.Competition{}
-	var venue, currency *string
+	var venue, currency, venueID *string
 	var amount *int64
 
 	err := row.Scan(
 		&c.ID, &c.SportID, &c.Type, &c.Name, &c.OrganizerTeamID, &c.Status,
 		&c.StartAt, &c.EndAt, &venue, &c.PlayersPerSide, &amount, &currency,
-		&c.PlayerShare, &c.IsInternal, &c.CreatedAt,
+		&c.PlayerShare, &c.IsInternal, &c.CreatedAt, &venueID,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if venueID != nil {
+		c.VenueID = *venueID
 	}
 	if venue != nil {
 		c.Venue = *venue
@@ -95,8 +98,8 @@ func (r *CompetitionRepository) Create(ctx context.Context, c *competition.Compe
 		INSERT INTO competitions
 			(sport_id, type, name, organizer_team_id, status, start_at, end_at,
 			 venue, players_per_side, venue_cost_amount, venue_cost_currency, player_share,
-			 is_internal)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			 is_internal, venue_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id, created_at`
 
 	var amount *int64
@@ -114,7 +117,7 @@ func (r *CompetitionRepository) Create(ctx context.Context, c *competition.Compe
 	err := r.pool.QueryRow(ctx, q,
 		c.SportID, c.Type, c.Name, c.OrganizerTeamID, c.Status, c.StartAt, c.EndAt,
 		nullIfEmpty(c.Venue), c.PlayersPerSide, amount, currency, c.PlayerShare,
-		c.IsInternal,
+		c.IsInternal, nullIfEmpty(c.VenueID),
 	).Scan(&c.ID, &c.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("competition.Create: %w", err)

@@ -48,6 +48,15 @@ const (
 	// TypeFriendlyDeclined: id del desafío. La competencia queda cancelada, y
 	// esta fila es el único rastro de por qué desapareció de Activas.
 	TypeFriendlyDeclined Type = "friendly_declined"
+	/*
+		TypeFriendlyRequested: id del desafío. Al manager del equipo que publicó
+		un amistoso sin rival ("buscar rival"): otro equipo pidió jugarlo.
+
+		Lleva al mismo lugar que `friendly_challenged` —el desafío, donde se
+		acepta, contraoferta o rechaza— pero es otro hecho: acá no te desafiaron,
+		te contestaron. Por eso tipo propio y no reusar el otro.
+	*/
+	TypeFriendlyRequested Type = "friendly_requested"
 	// TypeTournamentInvited: id de la competencia. Al manager del invitado.
 	TypeTournamentInvited Type = "tournament_invited"
 	// TypeTournamentAnswered: id de la competencia. Al manager del organizador.
@@ -82,7 +91,24 @@ const (
 
 	// TypeChargeCreated: id del cobro, distinto para cada destinatario. Es el
 	// caso que obliga a que el payload sea por persona y no uno para todos.
+	//
+	// LEGADO: lo emitía el reparto del manager, que ya no existe —el cobro nace
+	// al confirmar y quien confirma no necesita que le avisen de su propio
+	// toque—. Queda porque hay filas guardadas con este tipo que tienen que
+	// seguir enrutando.
 	TypeChargeCreated Type = "charge_created"
+	/*
+		TypeChargeReminder: id del cobro, distinto para cada destinatario, igual
+		que el anterior. El manager le recuerda a los confirmados que deben su
+		parte de la cancha.
+
+		Va con clave diaria (`charge_reminder:<competencia>:<día>`): el mismo
+		jugador recibe a lo más uno por día y por partido, por más que el
+		manager toque el botón diez veces. Un día nuevo es un aviso nuevo y una
+		fila nueva, a propósito: "te lo recordamos el martes y el jueves" es
+		historia que conviene que quede.
+	*/
+	TypeChargeReminder Type = "charge_reminder"
 	// TypePaymentReceived: id del PARTIDO. No del cobro: no existe
 	// `GET /charges/:id`, y la vista del manager sobre los cobros es la sección
 	// del partido.

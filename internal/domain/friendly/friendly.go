@@ -46,6 +46,11 @@ type Challenge struct {
 	// cliente pueda distinguir una contraoferta sin respuesta de una ya
 	// contestada, sin tener que pedir las propuestas una por una.
 	LastProposedByTeamID string `json:"last_proposed_by_team_id,omitempty"`
+
+	// SearchID es la búsqueda publicada de la que nació el desafío, si nació
+	// de una ("buscar rival"). El retador es entonces quien publicó, no quien
+	// pidió: ver `Search`.
+	SearchID string `json:"search_id,omitempty"`
 }
 
 // Opponent devuelve el otro equipo del desafío.

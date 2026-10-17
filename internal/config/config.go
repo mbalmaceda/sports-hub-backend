@@ -106,6 +106,14 @@ type Config struct {
 	// audiencia es lo que impide que un token emitido para otra app de Google
 	// sirva para entrar acá. Vacío desactiva el endpoint.
 	GoogleClientIDs []string
+
+	// ── Admin ────────────────────────────────────────────────────────────────
+
+	// AdminToken es la llave de servicio de `/admin` (ver
+	// `middleware.AdminToken`). Vacío apaga el grupo entero. Si se pone, tiene
+	// que tener al menos 32 caracteres: protege la escritura del catálogo, y
+	// una llave corta se adivina.
+	AdminToken string
 }
 
 // GoogleSignInEnabled indica si se puede entrar con Google.
@@ -227,6 +235,11 @@ func Load() (Config, error) {
 		androidPackage = "com.zports.app"
 	}
 
+	adminToken := strings.TrimSpace(os.Getenv("ADMIN_TOKEN"))
+	if adminToken != "" && len(adminToken) < 32 {
+		return Config{}, fmt.Errorf("ADMIN_TOKEN must be at least 32 characters")
+	}
+
 	serviceAccount, err := resolveServiceAccount(os.Getenv("FIREBASE_SERVICE_ACCOUNT"))
 	if err != nil {
 		return Config{}, err
@@ -249,6 +262,7 @@ func Load() (Config, error) {
 		AppleAppID:              strings.TrimSpace(os.Getenv("APPLE_APP_ID")),
 		PlayStoreURL:            strings.TrimSpace(os.Getenv("PLAY_STORE_URL")),
 		GoogleClientIDs:         googleClientIDs,
+		AdminToken:              adminToken,
 	}, nil
 }
 

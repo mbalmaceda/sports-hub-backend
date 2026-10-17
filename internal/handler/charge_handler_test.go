@@ -1,12 +1,16 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +22,9 @@ import (
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/funds"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
+	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
 	"github.com/mbalmaceda/sports-hub-backend/internal/testutil"
 )
 
@@ -61,81 +67,85 @@ func sevenASideCompetition() *competition.Competition {
 	return c
 }
 
-func splitRequest(c *gin.Context) {
+func remindRequest(c *gin.Context) {
 	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/charges",
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/charge-reminders",
 		strings.NewReader(`{"source_type":"match_cost","source_id":"comp-1"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 }
 
-// El excedente del reparto queda anotado como fondo del equipo.
-func expectFundsSet(d chargeDeps, surplus int64) {
-	d.funds.On("Set", mock.Anything, homeTeam,
-		funds.Source{Type: funds.SourceMatchCost, ID: "comp-1"}, surplus, "CLP").Return(nil)
+// reminderHistory hace de tabla de notificaciones con la clave de deduplicación
+// incluida: el límite de uno por día es justo lo que se prueba, y un doble sin
+// ella no probaría nada.
+type reminderHistory struct {
+	mu     sync.Mutex
+	drafts []notification.Draft
+	keys   map[string]bool
 }
 
-// El monto por cabeza lo calcula el servidor desde la nómina, no el cliente:
-// $28.000 entre 7 por lado × 2 equipos = $2.000 fijos.
-func TestSplitCharges_ServerComputesTheAmount(t *testing.T) {
-	h, d := newChargeHandler()
-
-	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
-		Return(managerOf(homeTeam, "user-mgr"), nil)
-	d.competitions.On("FindByID", mock.Anything, "comp-1").Return(sevenASideCompetition(), nil)
-	d.matches.On("ListByCompetition", mock.Anything, "comp-1").Return([]*match.Match{
-		{ID: "match-1", CompetitionID: "comp-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Status: match.StatusConfirmed},
-	}, nil)
-	d.matches.On("ListCallups", mock.Anything, "match-1").Return([]*match.Callup{
-		{MembershipID: "m-1", Status: match.CallupConfirmed},
-		{MembershipID: "m-2", Status: match.CallupConfirmed},
-		{MembershipID: "m-3", Status: match.CallupCalled},
-		{MembershipID: "m-4", Status: match.CallupDeclined}, // no juega, no paga
-	}, nil)
-	d.members.On("ListByTeam", mock.Anything, homeTeam).Return([]*membership.TeamMember{
-		{MembershipID: "m-1", TeamID: homeTeam, Status: membership.StatusActive},
-		{MembershipID: "m-2", TeamID: homeTeam, Status: membership.StatusActive},
-		{MembershipID: "m-3", TeamID: homeTeam, Status: membership.StatusActive},
-		{MembershipID: "m-4", TeamID: homeTeam, Status: membership.StatusActive},
-	}, nil)
-
-	d.charges.On("CreateForSource", mock.Anything, mock.MatchedBy(func(in charge.CreateInput) bool {
-		if len(in.Lines) != 3 {
-			return false
+func (h *reminderHistory) CreateMany(
+	_ context.Context, drafts []notification.Draft,
+) ([]*notification.Notification, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*notification.Notification, 0, len(drafts))
+	for _, d := range drafts {
+		key := d.RecipientUserID + "|" + d.DedupeKey
+		if d.DedupeKey != "" && h.keys[key] && d.OnConflict == notification.ConflictSkip {
+			continue
 		}
-		for _, line := range in.Lines {
-			if line.Amount != 2000 || line.MembershipID == "m-4" {
-				return false
-			}
+		if d.DedupeKey != "" {
+			h.keys[key] = true
 		}
-		return true
-	})).Return([]*charge.Charge{}, nil)
-	// 3 pagan × $2.000 = $6.000, contra una mitad de $14.000: faltan $8.000,
-	// que el equipo absorbe como fondo negativo.
-	expectFundsSet(d, -8000)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-mgr")
-	splitRequest(c)
-
-	h.Split(c)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Equal(t, float64(2000), body["per_player"])
-	assert.Equal(t, float64(14000), body["team_share"])
-	assert.Equal(t, float64(-8000), body["surplus"])
-
-	d.charges.AssertExpectations(t)
-	d.funds.AssertExpectations(t)
+		h.drafts = append(h.drafts, d)
+		out = append(out, &notification.Notification{
+			ID: "n-" + d.RecipientUserID, RecipientUserID: d.RecipientUserID,
+			Type: d.Type, EntityID: d.EntityID,
+		})
+	}
+	return out, nil
+}
+func (h *reminderHistory) ListByUser(context.Context, string, int) (*notification.Feed, error) {
+	return nil, nil
+}
+func (h *reminderHistory) MarkRead(context.Context, string, string, time.Time) error { return nil }
+func (h *reminderHistory) MarkAllRead(context.Context, string, time.Time) (int64, error) {
+	return 0, nil
 }
 
-// Los montos que mande el cliente son irrelevantes: el servidor los ignora.
-func TestSplitCharges_IgnoresClientSuppliedAmounts(t *testing.T) {
-	h, d := newChargeHandler()
+// Sin teléfonos registrados no hay push que esperar: lo que se prueba es la fila.
+type noDevices struct{}
 
+func (noDevices) Register(context.Context, string, string, time.Time) error { return nil }
+func (noDevices) DevicesByUserIDs(context.Context, []string) ([]notification.Device, error) {
+	return nil, nil
+}
+
+func newRemindingChargeHandler() (*handler.ChargeHandler, chargeDeps, *reminderHistory) {
+	d := chargeDeps{
+		charges:      &testutil.MockChargeRepo{},
+		competitions: &testutil.MockCompetitionRepo{},
+		matches:      &testutil.MockMatchRepo{},
+		members:      &testutil.MockMembershipRepo{},
+		funds:        &testutil.MockFundsRepo{},
+	}
+	history := &reminderHistory{keys: map[string]bool{}}
+	svc := notify.NewService(nil, history, noDevices{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return handler.NewChargeHandler(d.charges, d.competitions, d.matches, d.members, d.funds, svc), d, history
+}
+
+// expectEnsure devuelve el cobro de esa membresía con el estado que ya tenía.
+func expectEnsure(d chargeDeps, membershipID string, status charge.Status) {
+	d.charges.On("EnsureForMembership", mock.Anything, mock.MatchedBy(func(in charge.EnsureInput) bool {
+		return in.MembershipID == membershipID
+	})).Return(&charge.Charge{
+		ID: "charge-" + membershipID, TeamID: homeTeam, MembershipID: membershipID,
+		Amount: 2000, Currency: "CLP", Status: status,
+	}, nil)
+}
+
+// El partido con un plantel de cinco, uno por cada caso que importa.
+func stubFriendlyWithCallups(d chargeDeps) {
 	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
 		Return(managerOf(homeTeam, "user-mgr"), nil)
 	d.competitions.On("FindByID", mock.Anything, "comp-1").Return(sevenASideCompetition(), nil)
@@ -143,70 +153,98 @@ func TestSplitCharges_IgnoresClientSuppliedAmounts(t *testing.T) {
 		{ID: "match-1", CompetitionID: "comp-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Status: match.StatusConfirmed},
 	}, nil)
 	d.matches.On("ListCallups", mock.Anything, "match-1").Return([]*match.Callup{
-		{MembershipID: "m-1", Status: match.CallupConfirmed},
-	}, nil)
-	d.members.On("ListByTeam", mock.Anything, homeTeam).Return([]*membership.TeamMember{
-		{MembershipID: "m-1", TeamID: homeTeam, Status: membership.StatusActive},
-	}, nil)
-	d.charges.On("CreateForSource", mock.Anything, mock.MatchedBy(func(in charge.CreateInput) bool {
-		return len(in.Lines) == 1 && in.Lines[0].Amount == 2000
-	})).Return([]*charge.Charge{}, nil)
-	expectFundsSet(d, -12000)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-mgr")
-	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
-	// El cliente intenta cobrar $1 y sumar a alguien de otro equipo.
-	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/charges",
-		strings.NewReader(`{"source_type":"match_cost","source_id":"comp-1",
-		                    "lines":[{"membership_id":"m-ajeno","amount":1}],"total_amount":1}`))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	h.Split(c)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-	d.charges.AssertExpectations(t)
-	d.funds.AssertExpectations(t)
-}
-
-// Un id de otro equipo colado en la convocatoria no genera deuda.
-func TestSplitCharges_SkipsCallupsFromAnotherTeam(t *testing.T) {
-	h, d := newChargeHandler()
-
-	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
-		Return(managerOf(homeTeam, "user-mgr"), nil)
-	d.competitions.On("FindByID", mock.Anything, "comp-1").Return(sevenASideCompetition(), nil)
-	d.matches.On("ListByCompetition", mock.Anything, "comp-1").Return([]*match.Match{
-		{ID: "match-1", CompetitionID: "comp-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Status: match.StatusConfirmed},
-	}, nil)
-	d.matches.On("ListCallups", mock.Anything, "match-1").Return([]*match.Callup{
-		{MembershipID: "m-1", Status: match.CallupConfirmed},
+		{MembershipID: "m-debe", Status: match.CallupConfirmed},
+		{MembershipID: "m-pago", Status: match.CallupConfirmed},
+		{MembershipID: "m-citado", Status: match.CallupCalled},
+		{MembershipID: "m-no-va", Status: match.CallupDeclined},
 		{MembershipID: "m-del-rival", Status: match.CallupConfirmed},
 	}, nil)
 	d.members.On("ListByTeam", mock.Anything, homeTeam).Return([]*membership.TeamMember{
-		{MembershipID: "m-1", TeamID: homeTeam, Status: membership.StatusActive},
+		{MembershipID: "m-debe", UserID: "user-debe", TeamID: homeTeam, Status: membership.StatusActive},
+		{MembershipID: "m-pago", UserID: "user-pago", TeamID: homeTeam, Status: membership.StatusActive},
+		{MembershipID: "m-citado", UserID: "user-citado", TeamID: homeTeam, Status: membership.StatusActive},
+		{MembershipID: "m-no-va", UserID: "user-no-va", TeamID: homeTeam, Status: membership.StatusActive},
 	}, nil)
-	d.charges.On("CreateForSource", mock.Anything, mock.MatchedBy(func(in charge.CreateInput) bool {
-		return len(in.Lines) == 1 && in.Lines[0].MembershipID == "m-1"
-	})).Return([]*charge.Charge{}, nil)
-	expectFundsSet(d, -12000)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-mgr")
-	splitRequest(c)
-
-	h.Split(c)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-	d.charges.AssertExpectations(t)
-	d.funds.AssertExpectations(t)
+	expectEnsure(d, "m-debe", charge.StatusPending)
+	expectEnsure(d, "m-pago", charge.StatusPaid)
+	d.charges.On("ListBySource", mock.Anything, charge.Source{Type: charge.SourceMatchCost, ID: "comp-1"}).
+		Return([]*charge.Charge{
+			{ID: "charge-m-debe", TeamID: homeTeam, MembershipID: "m-debe", Status: charge.StatusPending},
+			{ID: "charge-m-pago", TeamID: homeTeam, MembershipID: "m-pago", Status: charge.StatusPaid},
+			{ID: "charge-rival", TeamID: awayTeam, MembershipID: "m-del-rival", Status: charge.StatusPending},
+		}, nil)
 }
 
-// Sin convocatoria no hay a quién cobrarle.
-func TestSplitCharges_RequiresCallups(t *testing.T) {
-	h, d := newChargeHandler()
+type remindResponse struct {
+	Notified int              `json:"notified"`
+	Pending  int              `json:"pending"`
+	Charges  []*charge.Charge `json:"charges"`
+}
+
+func remind(t *testing.T, h *handler.ChargeHandler, userID string) (int, remindResponse) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, userID)
+	remindRequest(c)
+	h.RemindPending(c)
+
+	var body remindResponse
+	if w.Code == http.StatusOK {
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	}
+	return w.Code, body
+}
+
+// La regla entera: un cobro existe si y solo si confirmaste, y el aviso va a
+// quien lo debe. El citado que no contestó no recibe cobro ni aviso, el que
+// pagó tampoco, y la convocatoria del rival no se toca.
+func TestRemindPending_OnlyConfirmedWhoStillOwe(t *testing.T) {
+	h, d, history := newRemindingChargeHandler()
+	stubFriendlyWithCallups(d)
+
+	code, body := remind(t, h, "user-mgr")
+
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, 1, body.Notified)
+	assert.Equal(t, 1, body.Pending)
+
+	require.Len(t, history.drafts, 1)
+	draft := history.drafts[0]
+	assert.Equal(t, "user-debe", draft.RecipientUserID)
+	assert.Equal(t, notification.TypeChargeReminder, draft.Type)
+	// Cada uno a SU cobro, no al partido.
+	assert.Equal(t, "charge-m-debe", draft.EntityID)
+	assert.True(t, strings.HasPrefix(draft.DedupeKey, "charge_reminder:comp-1:"))
+	assert.Equal(t, notification.ConflictSkip, draft.OnConflict)
+
+	// Solo se aseguró el cobro de los confirmados propios.
+	d.charges.AssertNumberOfCalls(t, "EnsureForMembership", 2)
+	for _, ch := range body.Charges {
+		assert.Equal(t, homeTeam, ch.TeamID, "los cobros del rival no vuelven")
+	}
+}
+
+// Uno por día: el segundo toque no escribe fila ni manda push, y la respuesta
+// lo dice en vez de anunciar un aviso que no salió.
+func TestRemindPending_OncePerDay(t *testing.T) {
+	h, d, history := newRemindingChargeHandler()
+	stubFriendlyWithCallups(d)
+
+	_, first := remind(t, h, "user-mgr")
+	code, second := remind(t, h, "user-mgr")
+
+	assert.Equal(t, 1, first.Notified)
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, 0, second.Notified)
+	assert.Equal(t, 1, second.Pending, "sigue debiendo: ya se le avisó hoy")
+	assert.Len(t, history.drafts, 1)
+}
+
+// El manager que juega y debe su parte no se recuerda a sí mismo: es quien
+// está tocando el botón.
+func TestRemindPending_DoesNotNotifyTheCaller(t *testing.T) {
+	h, d, history := newRemindingChargeHandler()
 
 	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
 		Return(managerOf(homeTeam, "user-mgr"), nil)
@@ -214,61 +252,53 @@ func TestSplitCharges_RequiresCallups(t *testing.T) {
 	d.matches.On("ListByCompetition", mock.Anything, "comp-1").Return([]*match.Match{
 		{ID: "match-1", CompetitionID: "comp-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Status: match.StatusConfirmed},
 	}, nil)
-	d.matches.On("ListCallups", mock.Anything, "match-1").Return([]*match.Callup{}, nil)
-	d.members.On("ListByTeam", mock.Anything, homeTeam).Return([]*membership.TeamMember{}, nil)
+	d.matches.On("ListCallups", mock.Anything, "match-1").Return([]*match.Callup{
+		{MembershipID: "m-mgr", Status: match.CallupConfirmed},
+	}, nil)
+	d.members.On("ListByTeam", mock.Anything, homeTeam).Return([]*membership.TeamMember{
+		{MembershipID: "m-mgr", UserID: "user-mgr", TeamID: homeTeam, Status: membership.StatusActive},
+	}, nil)
+	expectEnsure(d, "m-mgr", charge.StatusPending)
+	d.charges.On("ListBySource", mock.Anything, mock.Anything).Return([]*charge.Charge{}, nil)
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-mgr")
-	splitRequest(c)
+	code, body := remind(t, h, "user-mgr")
 
-	h.Split(c)
-
-	assert.Equal(t, http.StatusConflict, w.Code)
-	d.charges.AssertNotCalled(t, "CreateForSource", mock.Anything, mock.Anything)
-	d.funds.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, 0, body.Notified)
+	assert.Empty(t, history.drafts)
 }
 
-// Sin partido confirmado todavía no se reparte nada.
-func TestSplitCharges_RequiresAMatch(t *testing.T) {
-	h, d := newChargeHandler()
+// Un partido cancelado no se cobra: lo que queda es devolver, no recordar.
+func TestRemindPending_RequiresALiveMatch(t *testing.T) {
+	h, d, history := newRemindingChargeHandler()
 
 	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
 		Return(managerOf(homeTeam, "user-mgr"), nil)
 	d.competitions.On("FindByID", mock.Anything, "comp-1").Return(sevenASideCompetition(), nil)
-	d.matches.On("ListByCompetition", mock.Anything, "comp-1").Return([]*match.Match{}, nil)
+	d.matches.On("ListByCompetition", mock.Anything, "comp-1").Return([]*match.Match{
+		{ID: "match-1", CompetitionID: "comp-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Status: match.StatusCancelled},
+	}, nil)
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-mgr")
-	splitRequest(c)
+	code, _ := remind(t, h, "user-mgr")
 
-	h.Split(c)
-
-	assert.Equal(t, http.StatusConflict, w.Code)
-	d.charges.AssertNotCalled(t, "CreateForSource", mock.Anything, mock.Anything)
-	d.funds.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	assert.Equal(t, http.StatusConflict, code)
+	d.charges.AssertNotCalled(t, "EnsureForMembership", mock.Anything, mock.Anything)
+	assert.Empty(t, history.drafts)
 }
 
-// Un jugador raso no reparte costos.
-func TestSplitCharges_PlayerCannotSplit(t *testing.T) {
-	h, d := newChargeHandler()
+// Un jugador raso no le recuerda deudas a sus compañeros.
+func TestRemindPending_PlayerCannotRemind(t *testing.T) {
+	h, d, _ := newRemindingChargeHandler()
 
 	d.members.On("FindByUserAndTeam", mock.Anything, "user-player", homeTeam).Return(&membership.Membership{
 		ID: "m-1", UserID: "user-player", TeamID: homeTeam,
 		Role: membership.RolePlayer, Status: membership.StatusActive,
 	}, nil)
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-player")
-	splitRequest(c)
+	code, _ := remind(t, h, "user-player")
 
-	h.Split(c)
-
-	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Equal(t, http.StatusForbidden, code)
 	d.competitions.AssertNotCalled(t, "FindByID", mock.Anything, mock.Anything)
-	d.funds.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // El comprobante lo sube el propio deudor: nadie paga por otro.
@@ -349,73 +379,6 @@ func TestConfirmCharge_PlayerCannotConfirm(t *testing.T) {
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	d.charges.AssertNotCalled(t, "Confirm", mock.Anything, mock.Anything, mock.Anything)
-}
-
-// Más jugadores que la nómina: el excedente queda anotado como fondo del equipo.
-func TestSplitCharges_RecordsSurplusAsTeamFunds(t *testing.T) {
-	h, d := newChargeHandler()
-
-	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
-		Return(managerOf(homeTeam, "user-mgr"), nil)
-	d.competitions.On("FindByID", mock.Anything, "comp-1").Return(sevenASideCompetition(), nil)
-	d.matches.On("ListByCompetition", mock.Anything, "comp-1").Return([]*match.Match{
-		{ID: "match-1", CompetitionID: "comp-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Status: match.StatusConfirmed},
-	}, nil)
-	var callups []*match.Callup
-	members := make([]*membership.TeamMember, 0, 10)
-	for i := 1; i <= 10; i++ {
-		callups = append(callups, &match.Callup{MembershipID: fmt.Sprintf("m-%d", i), Status: match.CallupConfirmed})
-		members = append(members, &membership.TeamMember{MembershipID: fmt.Sprintf("m-%d", i), TeamID: homeTeam, Status: membership.StatusActive})
-	}
-	d.matches.On("ListCallups", mock.Anything, "match-1").Return(callups, nil)
-	d.members.On("ListByTeam", mock.Anything, homeTeam).Return(members, nil)
-	d.charges.On("CreateForSource", mock.Anything, mock.Anything).Return([]*charge.Charge{}, nil)
-	// 10 × $2.000 = $20.000, contra $14.000 de mitad: $6.000 para el equipo.
-	expectFundsSet(d, 6000)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-mgr")
-	splitRequest(c)
-
-	h.Split(c)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-	d.funds.AssertExpectations(t)
-}
-
-// Si el reparto no deja excedente, la entrada de fondos se borra: que un partido
-// no sobrara plata no deja un registro fantasma en la lista.
-func TestSplitCharges_RemovesFundsWhenNothingLeftOver(t *testing.T) {
-	h, d := newChargeHandler()
-
-	d.members.On("FindByUserAndTeam", mock.Anything, "user-mgr", homeTeam).
-		Return(managerOf(homeTeam, "user-mgr"), nil)
-	d.competitions.On("FindByID", mock.Anything, "comp-1").Return(sevenASideCompetition(), nil)
-	d.matches.On("ListByCompetition", mock.Anything, "comp-1").Return([]*match.Match{
-		{ID: "match-1", CompetitionID: "comp-1", HomeTeamID: homeTeam, AwayTeamID: awayTeam, Status: match.StatusConfirmed},
-	}, nil)
-	var callups []*match.Callup
-	members := make([]*membership.TeamMember, 0, 7)
-	for i := 1; i <= 7; i++ {
-		callups = append(callups, &match.Callup{MembershipID: fmt.Sprintf("m-%d", i), Status: match.CallupConfirmed})
-		members = append(members, &membership.TeamMember{MembershipID: fmt.Sprintf("m-%d", i), TeamID: homeTeam, Status: membership.StatusActive})
-	}
-	d.matches.On("ListCallups", mock.Anything, "match-1").Return(callups, nil)
-	d.members.On("ListByTeam", mock.Anything, homeTeam).Return(members, nil)
-	d.charges.On("CreateForSource", mock.Anything, mock.Anything).Return([]*charge.Charge{}, nil)
-	// 7 × $2.000 = $14.000 = la mitad exacta: excedente cero.
-	expectFundsSet(d, 0)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	withClaims(c, "user-mgr")
-	splitRequest(c)
-
-	h.Split(c)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-	d.funds.AssertExpectations(t)
 }
 
 // Los fondos del equipo se listan con el nombre del partido que los dejó.

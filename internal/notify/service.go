@@ -17,7 +17,7 @@ const sendTimeout = 15 * time.Second
 Recipient es una persona a la que le llega este evento.
 
 Trae su propio EntityID porque hay un caso donde el destino es distinto para
-cada uno: al repartir el costo de la cancha, cada jugador tiene que llegar a SU
+cada uno: al recordar el pago de la cancha, cada jugador tiene que llegar a SU
 cobro. Vacío significa "el del evento", que es lo que pasa en catorce de los
 quince flujos.
 */
@@ -162,6 +162,58 @@ func (s *Service) Emit(ctx context.Context, ev Event) error {
 		return nil
 	}
 
+	saved, err := s.history.CreateMany(ctx, draftsOf(ev))
+	if err != nil {
+		return err
+	}
+	// Cero filas guardadas con destinatarios de entrada significa que todas se
+	// saltearon: el aviso ya estaba dado. Es el caso normal de un trabajo
+	// periódico y no hay nada más que hacer.
+	if ev.Silent || len(saved) == 0 {
+		return nil
+	}
+
+	return s.push(ctx, ev, saved)
+}
+
+/*
+EmitNow guarda las filas dentro del request y deja solo el push en segundo plano.
+
+Existe para quien tiene que contestarle a una persona cuántos avisos salieron de
+verdad. El recordatorio de pago es el caso: con clave diaria, el segundo toque
+del día no escribe ninguna fila, y decirle "se avisó a 4" igual sería mentirle.
+La escritura es una sola sentencia y no hace esperar a nadie; Expo, que es lo
+lento, sigue fuera del request como en EmitAsync.
+
+Devuelve cuántas filas se guardaron, que es a cuántas personas les llegó.
+*/
+func (s *Service) EmitNow(ctx context.Context, ev Event) (int, error) {
+	if s == nil || len(ev.Recipients) == 0 {
+		return 0, nil
+	}
+
+	saved, err := s.history.CreateMany(ctx, draftsOf(ev))
+	if err != nil {
+		return 0, err
+	}
+	if ev.Silent || len(saved) == 0 {
+		return len(saved), nil
+	}
+
+	go func() {
+		pushCtx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+		defer cancel()
+		if err := s.push(pushCtx, ev, saved); err != nil {
+			s.logger.Error("could not push the notification",
+				"error", err, "type", ev.Type, "recipients", len(saved))
+		}
+	}()
+	return len(saved), nil
+}
+
+// draftsOf arma una fila por destinatario. El EntityID propio de cada uno gana
+// sobre el del evento: es lo que lleva a cada jugador a SU cobro.
+func draftsOf(ev Event) []notification.Draft {
 	drafts := make([]notification.Draft, 0, len(ev.Recipients))
 	for _, r := range ev.Recipients {
 		entityID := r.EntityID
@@ -179,19 +231,7 @@ func (s *Service) Emit(ctx context.Context, ev Event) error {
 			OnConflict:      ev.OnConflict,
 		})
 	}
-
-	saved, err := s.history.CreateMany(ctx, drafts)
-	if err != nil {
-		return err
-	}
-	// Cero filas guardadas con destinatarios de entrada significa que todas se
-	// saltearon: el aviso ya estaba dado. Es el caso normal de un trabajo
-	// periódico y no hay nada más que hacer.
-	if ev.Silent || len(saved) == 0 {
-		return nil
-	}
-
-	return s.push(ctx, ev, saved)
+	return drafts
 }
 
 // push manda un mensaje por dispositivo, cada uno con el id de la fila de SU

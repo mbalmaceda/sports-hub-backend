@@ -67,7 +67,7 @@ func newFriendlyHandler(
 	if len(sr) > 0 {
 		settlements = sr[0]
 	}
-	return handler.NewFriendlyHandler(fr, cr, mr, memr, settlements, nil, nil)
+	return handler.NewFriendlyHandler(fr, &testutil.MockFriendlySearchRepo{}, cr, mr, memr, settlements, nil, nil)
 }
 
 // El equipo que hizo la última propuesta no puede aceptarla. Sin este chequeo

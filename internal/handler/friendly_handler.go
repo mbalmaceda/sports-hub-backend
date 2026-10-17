@@ -28,7 +28,10 @@ import (
 const challengeTTL = 48 * time.Hour
 
 type FriendlyHandler struct {
-	friendlies   friendly.Repository
+	friendlies friendly.Repository
+	// searches entra por "buscar rival": aceptar un pedido cierra la búsqueda
+	// de la que nació y rechaza los demás. Ver `closeSearchOnAccept`.
+	searches     friendly.SearchRepository
 	competitions competition.Repository
 	matches      match.Repository
 	settlements  settlement.Repository
@@ -42,6 +45,7 @@ type FriendlyHandler struct {
 
 func NewFriendlyHandler(
 	friendlies friendly.Repository,
+	searches friendly.SearchRepository,
 	competitions competition.Repository,
 	matches match.Repository,
 	memberships membership.Repository,
@@ -51,6 +55,7 @@ func NewFriendlyHandler(
 ) *FriendlyHandler {
 	return &FriendlyHandler{
 		friendlies:    friendlies,
+		searches:      searches,
 		competitions:  competitions,
 		matches:       matches,
 		settlements:   settlements,
@@ -135,6 +140,7 @@ func (h *FriendlyHandler) Create(c *gin.Context) {
 		SportID          string    `json:"sport_id"           binding:"required"`
 		ProposedStartAt  time.Time `json:"proposed_start_at"  binding:"required"`
 		ProposedVenue    string    `json:"proposed_venue"`
+		VenueID          string    `json:"venue_id"`
 		Message          string    `json:"message"`
 		PlayersPerSide   *int      `json:"players_per_side"`
 		VenueCost        *struct {
@@ -163,6 +169,7 @@ func (h *FriendlyHandler) Create(c *gin.Context) {
 		Status:          competition.StatusDraft,
 		StartAt:         &req.ProposedStartAt,
 		Venue:           req.ProposedVenue,
+		VenueID:         req.VenueID,
 		PlayersPerSide:  req.PlayersPerSide,
 	}
 	if req.VenueCost != nil {
@@ -226,6 +233,7 @@ func (h *FriendlyHandler) CreateInternal(c *gin.Context) {
 		SportID        string    `json:"sport_id" binding:"required"`
 		StartAt        time.Time `json:"start_at" binding:"required"`
 		Venue          string    `json:"venue"`
+		VenueID        string    `json:"venue_id"`
 		PlayersPerSide *int      `json:"players_per_side"`
 		VenueCost      *struct {
 			Amount   int64  `json:"amount"   binding:"min=0"`
@@ -251,6 +259,7 @@ func (h *FriendlyHandler) CreateInternal(c *gin.Context) {
 		Status:         competition.StatusActive,
 		StartAt:        &req.StartAt,
 		Venue:          req.Venue,
+		VenueID:        req.VenueID,
 		PlayersPerSide: req.PlayersPerSide,
 		IsInternal:     true,
 	}
@@ -367,6 +376,27 @@ func (h *FriendlyHandler) Accept(c *gin.Context) {
 		return
 	}
 
+	/*
+		Un pedido a una búsqueda cierra la búsqueda ANTES de crear el partido.
+
+		El cierre es el candado: `Close` solo pasa si la búsqueda seguía
+		abierta, así que de dos pedidos aceptados al mismo tiempo uno solo
+		llega a tener partido. Hacerlo después dejaría dos partidos para la
+		misma cancha y la misma hora.
+	*/
+	var declinedRequests []*friendly.Challenge
+	if ch.SearchID != "" && h.searches != nil {
+		declinedRequests, err = h.searches.Close(c.Request.Context(), ch.SearchID, friendly.SearchMatched, ch.ID)
+		if errors.Is(err, friendly.ErrSearchClosed) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not close the friendly search"})
+			return
+		}
+	}
+
 	if err := h.friendlies.UpdateStatus(c.Request.Context(), ch.ID, friendly.StatusAccepted); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not accept friendly"})
 		return
@@ -448,6 +478,13 @@ func (h *FriendlyHandler) Accept(c *gin.Context) {
 		distancia de lo único que le queda por hacer.
 	*/
 	actor, _ := currentUserID(c)
+
+	// Los otros que pidieron la misma búsqueda se enteran de que el
+	// publicador eligió a otro: si no, siguen esperando una respuesta.
+	releaseDeclinedRequests(c.Request.Context(), h.competitions, h.notifications, h.teams,
+		h.authz.memberships, declinedRequests, ch.ChallengerTeamID, actor,
+		" ya encontró rival para el amistoso que publicó.")
+
 	h.announceResponse(c.Request.Context(), responseAnnouncement{
 		challenge:  ch,
 		actingTeam: actingTeamID,

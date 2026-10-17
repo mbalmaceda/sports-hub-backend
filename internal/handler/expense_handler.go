@@ -108,7 +108,7 @@ func (h *ExpenseHandler) ListByCompetition(c *gin.Context) {
 func (h *ExpenseHandler) Create(c *gin.Context) {
 	teamID := c.Param("id")
 
-	// Mismo par de roles que el reparto de cobros: quien mueve la plata del
+	// Mismo par de roles que el recordatorio de cobros: quien mueve la plata del
 	// equipo la mueve entera, no solo la que entra.
 	if _, err := h.authz.requireRole(
 		c, teamID, membership.RoleManager, membership.RoleTreasurer,

@@ -105,66 +105,12 @@ func (r *ChargeRepository) ListByMembership(ctx context.Context, membershipID st
 	return collectCharges(rows)
 }
 
-// CreateForSource rehace el reparto conservando lo ya cobrado.
-//
-// Borra únicamente los cargos pendientes de ese origen y luego inserta los
-// nuevos con ON CONFLICT DO NOTHING, de modo que los que quedaron —pagados o
-// con comprobante enviado— sobreviven intactos. Si el manager rehace el reparto
-// porque cambió la nómina, no puede borrar plata que alguien ya transfirió.
-func (r *ChargeRepository) CreateForSource(ctx context.Context, in charge.CreateInput) ([]*charge.Charge, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("charge.CreateForSource: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	const clearPending = `
-		DELETE FROM charges
-		WHERE source_type = $1 AND source_id = $2 AND status = 'pending'`
-	if _, err := tx.Exec(ctx, clearPending, in.Source.Type, in.Source.ID); err != nil {
-		return nil, fmt.Errorf("charge.CreateForSource: clear: %w", err)
-	}
-
-	const insert = `
-		INSERT INTO charges
-			(team_id, membership_id, source_type, source_id, amount, currency, status, due_date)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
-		ON CONFLICT (source_type, source_id, membership_id) DO NOTHING`
-	for _, line := range in.Lines {
-		_, err := tx.Exec(ctx, insert,
-			in.TeamID, line.MembershipID, in.Source.Type, in.Source.ID,
-			line.Amount, in.Currency, in.DueDate,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("charge.CreateForSource: insert: %w", err)
-		}
-	}
-
-	q := `SELECT` + chargeColumns + `
-		FROM charges WHERE source_type = $1 AND source_id = $2
-		ORDER BY created_at`
-	rows, err := tx.Query(ctx, q, in.Source.Type, in.Source.ID)
-	if err != nil {
-		return nil, fmt.Errorf("charge.CreateForSource: select: %w", err)
-	}
-	charges, err := collectCharges(rows)
-	rows.Close()
-	if err != nil {
-		return nil, fmt.Errorf("charge.CreateForSource: scan: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("charge.CreateForSource: commit: %w", err)
-	}
-	return charges, nil
-}
-
 // EnsureForMembership crea el cargo de una membresía si todavía no existe.
 //
 // El ON CONFLICT DO NOTHING más el SELECT de vuelta es lo que lo hace
 // idempotente sin pisar nada: dos toques seguidos de "¡Voy!" no duplican el
-// cargo, y si el manager ya lo había repartido con otro monto, gana el que ya
-// estaba —el suyo es el número acordado, no este.
+// cargo, y si ya existía con otro monto, gana el que ya estaba: es el número
+// que esa persona ya vio.
 func (r *ChargeRepository) EnsureForMembership(
 	ctx context.Context, in charge.EnsureInput,
 ) (*charge.Charge, error) {

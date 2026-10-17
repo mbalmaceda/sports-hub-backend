@@ -11,7 +11,6 @@ import (
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/charge"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/competition"
-	"github.com/mbalmaceda/sports-hub-backend/internal/domain/funds"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/guest"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/match"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
@@ -38,7 +37,6 @@ type CompetitionHandler struct {
 	// Todo lo que hay que deshacer al cancelar. Ver `Cancel`.
 	charges     charge.Repository
 	settlements settlement.Repository
-	funds       funds.Repository
 	invites     guest.Repository
 }
 
@@ -49,7 +47,6 @@ func NewCompetitionHandler(
 	teams team.Repository,
 	charges charge.Repository,
 	settlements settlement.Repository,
-	teamFunds funds.Repository,
 	invites guest.Repository,
 	notifications *notify.Service,
 ) *CompetitionHandler {
@@ -62,7 +59,6 @@ func NewCompetitionHandler(
 		authz:         authz,
 		charges:       charges,
 		settlements:   settlements,
-		funds:         teamFunds,
 		invites:       invites,
 		// El repositorio de partidos entra solo por esto: la regla de acceso
 		// necesita saber si un invitado tiene convocatoria a alguno de los
@@ -97,11 +93,12 @@ Lo que deshace, en orden, y por qué cada cosa:
     quién devolverle.
  2. La **liquidación** entre equipos, por lo mismo. Si el rival ya había
     transferido su mitad, el organizador tiene plata ajena que devolver.
- 3. Los **fondos** del reparto: un excedente de un partido que no se jugó es
-    plata inventada. `funds.Set` con cero borra la entrada.
- 4. Los **enlaces de invitados** vigentes, o alguien se suma por WhatsApp a un
+ 3. Los **enlaces de invitados** vigentes, o alguien se suma por WhatsApp a un
     partido que ya no existe.
- 5. Los **partidos** y la competencia.
+ 4. Los **partidos** y la competencia.
+
+Los fondos no se tocan porque no se guardan: se derivan de los cobros, y un
+partido cancelado queda fuera de esa cuenta solo (ver `funds.ListByTeam`).
 
 Ninguno de esos pasos aborta la cancelación si falla, y es a propósito: el
 partido se cancela igual. Un cobro que quedó vivo se puede volver a anular; una
@@ -160,17 +157,6 @@ func (h *CompetitionHandler) Cancel(c *gin.Context) {
 	if err != nil {
 		slog.Error("could not cancel what the rival owed for the venue",
 			"error", err, "competition_id", competitionID)
-	}
-
-	// El excedente del reparto se borra para los dos equipos: cada uno guardó
-	// el suyo, y el que no organizó también tiene fondo si repartió.
-	for _, teamID := range teamsOf(matches) {
-		if err := h.funds.Set(ctx, teamID, funds.Source{
-			Type: funds.SourceMatchCost, ID: competitionID,
-		}, 0, ""); err != nil {
-			slog.Error("could not clear the funds of a cancelled match",
-				"error", err, "competition_id", competitionID, "team_id", teamID)
-		}
 	}
 
 	now := time.Now()

@@ -30,49 +30,43 @@ func scanFunds(row pgx.Row) (*funds.Entry, error) {
 	return e, nil
 }
 
-// Set actualiza el fondo de ese origen, o lo borra si el reparto no deja plata.
-// La condición del monto cero evita que un partido sin excedente quede figurando
-// en la lista de fondos del equipo.
-func (r *FundsRepository) Set(
-	ctx context.Context, teamID string, source funds.Source, amount int64, currency string,
-) error {
-	if amount == 0 {
-		const del = `DELETE FROM team_funds WHERE team_id = $1 AND source_type = $2 AND source_id = $3`
-		if _, err := r.pool.Exec(ctx, del, teamID, source.Type, source.ID); err != nil {
-			return fmt.Errorf("funds.Set (delete): %w", err)
-		}
-		return nil
-	}
+/*
+ListByTeam deriva los fondos del equipo de sus cobros de cancha.
 
-	const upsert = `
-		INSERT INTO team_funds (team_id, source_type, source_id, amount, currency, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
-		ON CONFLICT (team_id, source_type, source_id)
-		DO UPDATE SET amount = EXCLUDED.amount, currency = EXCLUDED.currency, updated_at = NOW()`
-	if _, err := r.pool.Exec(ctx, upsert, teamID, source.Type, source.ID, amount, currency); err != nil {
-		return fmt.Errorf("funds.Set: %w", err)
-	}
-	return nil
-}
+Por partido: lo cobrado a los propios confirmados menos lo que al equipo le toca
+poner del lugar. Las tres reglas que lo acotan:
 
-// ListByTeam trae los fondos del equipo con el nombre de su origen resuelto.
-//
-// El LEFT JOIN es lo que evita el N+1: antes el handler pedía la competencia de
-// cada entrada por separado, así que un equipo con treinta partidos hacía
-// treinta y una consultas contra una base que está en otra región.
-//
-// LEFT y no INNER porque un fondo sobrevive a su competencia: si el partido se
-// borró, la plata que dejó sigue siendo del equipo y tiene que seguir sumando
-// al total, aunque ya no se pueda decir de dónde salió.
+  - Cuenta el cobro emitido, pagado o no. Es el mismo criterio que tenía el
+    reparto —el fondo es lo que el partido deja, no lo que ya entró—; lo que
+    falta cobrar lo dice el Resumen por su lado.
+  - Lo que le toca poner es la mitad del lugar (`charge.TeamShare`, el mismo
+    redondeo hacia arriba), salvo en un partido interno, donde los dos lados son
+    nuestros y el lugar entero es suyo. El organizador paga el entero pero recibe
+    la otra mitad del rival, así que para él también es la mitad.
+  - Solo partidos que ya empezaron y no se cancelaron. Antes del pitazo cada
+    confirmación movería el número, y en un partido que recién junta gente el
+    fondo saldría negativo aunque nadie haya perdido nada.
+*/
 func (r *FundsRepository) ListByTeam(ctx context.Context, teamID string) ([]*funds.Entry, error) {
 	const q = `
-		SELECT f.team_id, f.source_type, f.source_id, f.amount, f.currency, f.updated_at,
-		       COALESCE(c.name, '')
-		FROM team_funds f
-		LEFT JOIN competitions c
-		       ON f.source_type = 'match_cost' AND c.id = f.source_id
-		WHERE f.team_id = $1
-		ORDER BY f.updated_at DESC`
+		SELECT ch.team_id, 'match_cost', c.id,
+		       (SUM(ch.amount) - CASE WHEN c.is_internal
+		                              THEN c.venue_cost_amount
+		                              ELSE (c.venue_cost_amount + 1) / 2 END)::bigint AS amount,
+		       COALESCE(c.venue_cost_currency, 'CLP'), c.start_at, c.name
+		FROM charges ch
+		JOIN competitions c ON c.id = ch.source_id
+		WHERE ch.team_id = $1
+		  AND ch.source_type = 'match_cost'
+		  AND ch.status <> 'cancelled'
+		  AND c.status <> 'cancelled'
+		  AND c.venue_cost_amount > 0
+		  AND c.start_at <= NOW()
+		GROUP BY ch.team_id, c.id
+		HAVING SUM(ch.amount) <> CASE WHEN c.is_internal
+		                              THEN c.venue_cost_amount
+		                              ELSE (c.venue_cost_amount + 1) / 2 END
+		ORDER BY c.start_at DESC`
 	rows, err := r.pool.Query(ctx, q, teamID)
 	if err != nil {
 		return nil, fmt.Errorf("funds.ListByTeam: %w", err)

@@ -154,18 +154,41 @@ func (h *ChargeHandler) ListByMembership(c *gin.Context) {
 	c.JSON(http.StatusOK, charges)
 }
 
-// Split POST /teams/:id/charges
-//
-// Reparte el costo del lugar entre los jugadores convocados.
-//
-// El cuerpo solo dice QUÉ repartir, no cuánto: el monto por cabeza y quiénes
-// pagan los deriva el servidor de la competencia y de la convocatoria. Antes
-// esto aceptaba los montos del cliente y verificaba que sumaran un total que el
-// propio cliente mandaba — o sea, no verificaba nada. Ahora un cliente
-// manipulado no puede inventar deuda ni cobrarle a quien no juega.
-func (h *ChargeHandler) Split(c *gin.Context) {
+// reminderZone es el reloj con el que se cuenta "uno por día". Es el del
+// equipo y no UTC: en UTC el día cambia a las 21:00 de Chile, y un manager que
+// recuerda a las 20:00 y a las 22:00 mandaría dos avisos la misma noche.
+const reminderZone = "America/Santiago"
+
+/*
+RemindPending POST /teams/:id/charge-reminders
+
+Les recuerda a los confirmados del propio equipo que todavía deben su parte de
+la cancha. Reemplaza al viejo "repartir", que dejó de tener sentido el día que
+el cobro empezó a nacer al confirmar (`ensureMatchCharge`).
+
+La regla que sostiene es una sola: **un cobro existe si y solo si confirmaste**.
+El reparto la rompía —cobraba también a los citados que nunca contestaron— y
+además borraba los pendientes del rival, porque los dos equipos comparten el
+mismo origen y el DELETE no miraba el equipo. Esto no borra nada y no le crea
+deuda a quien no confirmó.
+
+Lo que sí crea: el cobro de un confirmado que por algún motivo no lo tiene.
+`ensureMatchCharge` falla en silencio a propósito —no puede tumbar la respuesta
+a la citación— y este es el lugar natural para completarlo, porque es justo
+cuando el manager mira quién debe.
+
+El aviso va a los que deben (pendiente), cada uno a SU cobro, y con clave
+diaria: a lo más uno por persona, por partido y por día. Tocar el botón dos
+veces no manda dos pushes, y la respuesta dice a cuántos les llegó de verdad.
+
+Lee el cuerpo viejo del reparto (`source_type` + `source_id`) porque la 1.0.x
+todavía llama a `POST /teams/:id/charges` con él.
+*/
+func (h *ChargeHandler) RemindPending(c *gin.Context) {
+	ctx := c.Request.Context()
 	teamID := c.Param("id")
-	if _, err := h.authz.requireRole(c, teamID, membership.RoleManager, membership.RoleTreasurer); abortAuthz(c, err) {
+	me, err := h.authz.requireRole(c, teamID, membership.RoleManager, membership.RoleTreasurer)
+	if abortAuthz(c, err) {
 		return
 	}
 
@@ -178,7 +201,7 @@ func (h *ChargeHandler) Split(c *gin.Context) {
 		return
 	}
 
-	comp, err := h.competitions.FindByID(c.Request.Context(), req.SourceID)
+	comp, err := h.competitions.FindByID(ctx, req.SourceID)
 	if errors.Is(err, competition.ErrNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "competition not found"})
 		return
@@ -187,26 +210,16 @@ func (h *ChargeHandler) Split(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
-	if comp.VenueCost == nil || comp.VenueCost.Amount <= 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "this competition has no venue cost to split"})
-		return
-	}
-	if comp.PlayersPerSide == nil || *comp.PlayersPerSide <= 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "this competition has no squad size configured"})
-		return
-	}
-	// La cuota se guardó al crear la competencia. Si falta con costo y nómina
-	// cargados, es una fila anterior a la migración 015 que no se completó, y
-	// repartir con un número recalculado podría no coincidir con lo que ya se
-	// le cobró a quienes aceptaron antes.
-	if comp.PlayerShare == nil || *comp.PlayerShare <= 0 {
+	// La cuota se guardó al crear la competencia. Sin ella no hay cobro que
+	// recordar: nadie le puso precio al lugar.
+	if comp.VenueCost == nil || comp.PlayerShare == nil || *comp.PlayerShare <= 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "this competition has no per-player share on file"})
 		return
 	}
 
-	// El partido es el que tiene la convocatoria. Repartir antes de que exista
-	// significaría cobrarle a gente que todavía nadie citó.
-	matches, err := h.matches.ListByCompetition(c.Request.Context(), comp.ID)
+	// Un partido cancelado no se cobra: sus cobros ya están anulados y lo que
+	// queda es devolver, no recordar.
+	matches, err := h.matches.ListByCompetition(ctx, comp.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read the match"})
 		return
@@ -219,114 +232,119 @@ func (h *ChargeHandler) Split(c *gin.Context) {
 		}
 	}
 	if target == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "there is no confirmed match for this competition yet"})
+		c.JSON(http.StatusConflict, gin.H{"error": "there is no confirmed match for this competition"})
 		return
 	}
 
-	callups, err := h.matches.ListCallups(c.Request.Context(), target.ID)
+	callups, err := h.matches.ListCallups(ctx, target.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read the callups"})
 		return
 	}
 
-	// Solo el propio plantel: la convocatoria del rival no se toca, y así un
-	// id ajeno filtrado por cualquier vía queda afuera igual.
-	members, err := h.memberships.ListByTeam(c.Request.Context(), teamID)
+	// Solo el propio equipo, invitados incluidos: el parche confirmado paga
+	// igual que cualquiera. La convocatoria del rival no es asunto nuestro.
+	members, err := h.memberships.ListByTeam(ctx, teamID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not verify the roster"})
 		return
 	}
-	own := make(map[string]bool, len(members))
-	for _, m := range members {
-		own[m.MembershipID] = true
-	}
-
-	// Pagan los que van: confirmados y convocados. Quien avisó que no puede
-	// queda afuera; cobrarle la cancha a alguien que no juega rompe la
-	// confianza en la app.
-	payers := make([]string, 0, len(callups))
-	for _, cu := range callups {
-		if !own[cu.MembershipID] {
-			continue
-		}
-		if cu.Status == match.CallupConfirmed || cu.Status == match.CallupCalled {
-			payers = append(payers, cu.MembershipID)
-		}
-	}
-	if len(payers) == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "call up players before splitting the cost"})
-		return
-	}
-
-	split := charge.SplitMatchCostWithShare(comp.VenueCost.Amount, *comp.PlayerShare, payers)
-
-	charges, err := h.charges.CreateForSource(c.Request.Context(), charge.CreateInput{
-		TeamID:   teamID,
-		Source:   charge.Source{Type: charge.SourceMatchCost, ID: comp.ID},
-		Currency: comp.VenueCost.Currency,
-		Lines:    split.Lines,
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create charges"})
-		return
-	}
-
-	// El excedente queda anotado como fondo del equipo. Rehacer el reparto lo
-	// recalcula: si un partido deja de sobrar, la entrada desaparece.
-	if err := h.funds.Set(c.Request.Context(), teamID, funds.Source{
-		Type: funds.SourceMatchCost,
-		ID:   comp.ID,
-	}, split.Surplus, comp.VenueCost.Currency); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not record team funds"})
-		return
-	}
-
-	/*
-		Se avisa después de guardar y sin esperar el envío: el reparto ya está
-		hecho y que Expo tarde o falle no cambia nada de lo anterior.
-
-		Este es el único flujo donde cada destinatario va a un lado distinto: el
-		cobro es de cada uno, y mandarlos a todos al mismo id sería llevarlos al
-		cargo de otro. De acá salió que `Recipient` cargue su propio EntityID en
-		vez de que el evento tenga uno solo para el grupo.
-
-		Ojo con lo que NO notifica: el cargo también nace cuando el jugador
-		confirma la citación (`syncMatchCharge`) y cuando un parche canjea el
-		enlace. Esos dos no avisan a propósito —sería mandarle "nuevo cobro" a
-		alguien por un cargo que creó su propio toque, en la misma pantalla donde
-		acaba de tocar—. El aviso es de esta acción del manager: repartir.
-	*/
 	userByMembership := make(map[string]string, len(members))
 	for _, m := range members {
 		userByMembership[m.MembershipID] = m.UserID
 	}
-	recipients := make([]notify.Recipient, 0, len(charges))
-	for _, ch := range charges {
-		if userID, ok := userByMembership[ch.MembershipID]; ok {
-			recipients = append(recipients, notify.Recipient{UserID: userID, EntityID: ch.ID})
+
+	source := charge.Source{Type: charge.SourceMatchCost, ID: comp.ID}
+	pending := make([]notify.Recipient, 0, len(callups))
+	for _, cu := range callups {
+		userID, own := userByMembership[cu.MembershipID]
+		if !own || cu.Status != match.CallupConfirmed {
+			continue
+		}
+		ch, err := h.charges.EnsureForMembership(ctx, charge.EnsureInput{
+			TeamID:       teamID,
+			MembershipID: cu.MembershipID,
+			Source:       source,
+			Amount:       *comp.PlayerShare,
+			Currency:     comp.VenueCost.Currency,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read the charges"})
+			return
+		}
+		// Quien maneja la plata y además juega no se manda el aviso a sí mismo:
+		// es quien está tocando el botón.
+		if ch.Status == charge.StatusPending && userID != me.UserID {
+			pending = append(pending, notify.Recipient{UserID: userID, EntityID: ch.ID})
 		}
 	}
-	h.notifications.EmitAsync(notify.Event{
-		TeamID:     teamID,
-		Type:       notification.TypeChargeCreated,
-		Title:      "Nuevo cobro",
-		Body:       "Se repartió el costo de la cancha. Toca para ver tu parte.",
-		Recipients: recipients,
-	})
 
-	c.JSON(http.StatusCreated, gin.H{
-		"charges":    charges,
-		"per_player": split.PerPlayer,
-		"team_share": split.TeamShare,
-		"surplus":    split.Surplus,
+	notified, err := h.notifications.EmitNow(ctx, notify.Event{
+		TeamID:     teamID,
+		Type:       notification.TypeChargeReminder,
+		Title:      "Recordatorio de pago",
+		Body:       reminderBody(comp),
+		Recipients: pending,
+		DedupeKey:  notification.DedupeKey(string(notification.TypeChargeReminder), comp.ID, reminderDay(time.Now())),
+		OnConflict: notification.ConflictSkip,
 	})
+	if err != nil {
+		// Los cobros quedaron en orden; lo que falló es el aviso. Se reporta
+		// porque la pantalla le va a decir al manager a cuántos les llegó.
+		slog.Error("could not record the payment reminders",
+			"error", err, "competition_id", comp.ID, "team_id", teamID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not send the reminders"})
+		return
+	}
+
+	// Los cobros vuelven filtrados por equipo: el origen es compartido con el
+	// rival, y la 1.0.x pinta lo que reciba acá.
+	all, err := h.charges.ListBySource(ctx, source)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list charges"})
+		return
+	}
+	own := make([]*charge.Charge, 0, len(all))
+	for _, ch := range all {
+		if ch.TeamID == teamID {
+			own = append(own, ch)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		// A cuántos les llegó un aviso nuevo con este toque.
+		"notified": notified,
+		// Cuántos deben, avisados hoy o no. Con `notified` en cero y esto en
+		// más, la pantalla sabe que ya se les recordó hoy.
+		"pending": len(pending),
+		"charges": own,
+	})
+}
+
+// reminderBody nombra el partido cuando hay nombre: un jugador puede deber dos
+// canchas a la vez, y "tu parte de la cancha" a secas no dice de cuál.
+func reminderBody(comp *competition.Competition) string {
+	if comp.Name == "" {
+		return "Todavía falta tu parte de la cancha. Toca para pagarla."
+	}
+	return "Todavía falta tu parte de la cancha de " + comp.Name + ". Toca para pagarla."
+}
+
+// reminderDay es el día calendario de Chile, que es lo que cuenta para "uno por
+// día". Sin la base de zonas cae a UTC: un día corrido es mejor que no avisar.
+func reminderDay(now time.Time) string {
+	if location, err := time.LoadLocation(reminderZone); err == nil {
+		now = now.In(location)
+	}
+	return now.Format("2006-01-02")
 }
 
 // Funds GET /teams/:id/funds
 //
-// Los fondos del equipo: lo que cada reparto del costo de cancha dejó por
-// encima de la mitad del lugar. Son acumulados, no de un mes, por eso viven
-// fuera del resumen mensual de cuotas.
+// Los fondos del equipo: lo que cada partido jugado dejó por encima de lo que al
+// equipo le tocaba poner del lugar. Son acumulados, no de un mes, por eso viven
+// fuera del resumen mensual de cuotas. Se derivan de los cobros: ver
+// `funds.ListByTeam`.
 func (h *ChargeHandler) Funds(c *gin.Context) {
 	teamID := c.Param("id")
 	if _, err := h.authz.requireMember(c, teamID); abortAuthz(c, err) {
@@ -422,7 +440,7 @@ la app no tiene.
 Y lleva al PARTIDO, no al cobro. No existe `GET /charges/:id` —la pantalla del
 cargo resuelve buscando dentro de la lista del propio jugador— así que un manager
 que llegara ahí vería "este cobro ya no está". Su vista sobre los cobros es la
-sección del partido, que además le muestra el reparto entero y no solo el que
+sección del partido, que además le muestra todos los cobros y no solo el que
 acaba de entrar.
 
 Va al manager y al tesorero: el tesorero existe justamente para que el manager no

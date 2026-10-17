@@ -58,6 +58,8 @@ func main() {
 	paymentRepo := postgres.NewPaymentRepository(pool)
 	competitionRepo := postgres.NewCompetitionRepository(pool)
 	friendlyRepo := postgres.NewFriendlyRepository(pool)
+	friendlySearchRepo := postgres.NewFriendlySearchRepository(pool)
+	venueRepo := postgres.NewVenueRepository(pool)
 	matchRepo := postgres.NewMatchRepository(pool)
 	chargeRepo := postgres.NewChargeRepository(pool)
 	fundsRepo := postgres.NewFundsRepository(pool)
@@ -103,6 +105,7 @@ func main() {
 	*/
 	jobDeps := jobs.Deps{
 		Friendlies:    friendlyRepo,
+		Searches:      friendlySearchRepo,
 		Competitions:  competitionRepo,
 		Matches:       matchRepo,
 		Fees:          feeRepo,
@@ -141,9 +144,13 @@ func main() {
 	// (256 bits), pero sin límite queda un endpoint anónimo golpeable de a
 	// millones, y cada intento pega en la base.
 	inviteByIP := middleware.New(60, time.Minute)
+	// Sugerir una cancha escribe en un catálogo que ven todos: veinte por hora
+	// alcanza para el manager más activo y corta a quien quiera llenarlo de pines.
+	venueSuggestByUser := middleware.New(20, time.Hour)
 	defer func() {
 		for _, l := range []*middleware.Limiter{
 			loginByIP, loginByAccount, registerByIP, refreshByIP, lookupByUser, inviteByIP,
+			venueSuggestByUser,
 		} {
 			l.Stop()
 		}
@@ -165,10 +172,13 @@ func main() {
 	competitionHandler := handler.NewCompetitionHandler(
 		competitionRepo, rosterRepo, matchRepo, teamRepo,
 		// Todo lo que hay que deshacer al cancelar un partido. Ver `Cancel`.
-		chargeRepo, settlementRepo, fundsRepo, guestInviteRepo,
+		chargeRepo, settlementRepo, guestInviteRepo,
 		notifications)
 	friendlyHandler := handler.NewFriendlyHandler(
-		friendlyRepo, competitionRepo, matchRepo, rosterRepo, settlementRepo, teamRepo, notifications)
+		friendlyRepo, friendlySearchRepo, competitionRepo, matchRepo, rosterRepo, settlementRepo, teamRepo, notifications)
+	friendlySearchHandler := handler.NewFriendlySearchHandler(
+		friendlySearchRepo, friendlyRepo, competitionRepo, venueRepo, rosterRepo, teamRepo, notifications)
+	venueHandler := handler.NewVenueHandler(venueRepo)
 	matchHandler := handler.NewMatchHandler(matchRepo, rosterRepo, competitionRepo, chargeRepo, notifications, firebaseAuth)
 	chargeHandler := handler.NewChargeHandler(chargeRepo, competitionRepo, matchRepo, rosterRepo, fundsRepo, notifications)
 	expenseHandler := handler.NewExpenseHandler(expenseRepo, competitionRepo, rosterRepo)
@@ -205,7 +215,7 @@ func main() {
 			// no estaba en la lista exacta.
 			AllowOriginFunc: cfg.AllowOrigin,
 			AllowMethods:    []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowHeaders:    []string{"Origin", "Content-Type", "Authorization"},
+			AllowHeaders:    []string{"Origin", "Content-Type", "Authorization", middleware.AdminTokenHeader},
 			// Los tokens viajan en Authorization, no en cookies: el navegador no
 			// tiene credenciales que mandar solo, y habilitarlas obligaría a
 			// dejar de aceptar orígenes por patrón.
@@ -334,6 +344,21 @@ func main() {
 		// handler porque es un amistoso, solo que no hay a quién esperar.
 		protected.POST("/teams/:id/internal-matches", friendlyHandler.CreateInternal)
 
+		// ── Buscar rival ──
+		// Amistosos publicados sin rival, en un mapa. Pedir uno abre un desafío
+		// normal con el publicador como retador, y de ahí sigue por
+		// /friendlies/:challengeId como cualquier otro.
+		protected.GET("/friendly-searches", friendlySearchHandler.ListNearby)
+		protected.POST("/teams/:id/friendly-searches", friendlySearchHandler.Publish)
+		protected.POST("/friendly-searches/:searchId/cancel", friendlySearchHandler.Cancel)
+		protected.POST("/friendly-searches/:searchId/requests", friendlySearchHandler.Request)
+
+		// ── Canchas ──
+		// El catálogo con coordenadas. Buscar es libre; sugerir una que no
+		// está nace sin verificar y la revisa el admin.
+		protected.GET("/venues", venueHandler.Search)
+		protected.POST("/venues", venueSuggestByUser.ByUser(), venueHandler.Suggest)
+
 		// ── Partidos y convocatorias ──
 		protected.GET("/teams/:id/matches", matchHandler.ListByTeam)
 		protected.GET("/teams/:id/match-conflicts", matchHandler.ScheduleConflicts)
@@ -356,7 +381,13 @@ func main() {
 		protected.DELETE("/guest-invites/:inviteId", guestHandler.RevokeInvite)
 
 		// ── Cobros ──
-		protected.POST("/teams/:id/charges", chargeHandler.Split)
+		// Recordarles a los confirmados que deben su parte de la cancha. El
+		// cobro ya nace al confirmar: esto no crea deuda nueva, avisa la que hay.
+		protected.POST("/teams/:id/charge-reminders", chargeHandler.RemindPending)
+		// LEGADO: el viejo "repartir". Las versiones 1.0.x lo siguen llamando
+		// desde el botón "Cobrar a los confirmados", y ahora hace lo mismo que
+		// el recordatorio. Se saca cuando la versión nueva sea la mínima en Play.
+		protected.POST("/teams/:id/charges", chargeHandler.RemindPending)
 		protected.GET("/teams/:id/charges", chargeHandler.ListByTeamAndPeriod)
 		protected.GET("/teams/:id/funds", chargeHandler.Funds)
 		protected.GET("/teams/:id/bank-account", teamHandler.GetBankAccount)
@@ -394,6 +425,17 @@ func main() {
 		protected.GET("/teams/:id/join-requests", onboardingHandler.ListJoinRequests)
 		protected.POST("/teams/:id/join-requests", onboardingHandler.RequestToJoin)
 		protected.POST("/join-requests/:requestId/respond", onboardingHandler.RespondToJoinRequest)
+	}
+
+	// Admin: hoy, una llave de servicio para cargar el catálogo de canchas con
+	// curl. Sin ADMIN_TOKEN el grupo entero responde 404. Va afuera del grupo
+	// con sesión porque no hay usuario: ver `middleware.AdminToken`.
+	admin := r.Group("/admin", middleware.AdminToken(cfg.AdminToken))
+	{
+		admin.GET("/venues", venueHandler.AdminList)
+		admin.POST("/venues", venueHandler.AdminCreate)
+		admin.PATCH("/venues/:venueId", venueHandler.AdminUpdate)
+		admin.POST("/venues/:venueId/merge", venueHandler.AdminMerge)
 	}
 
 	// Servidor explícito en vez de r.Run(): lo que importa son los timeouts, que

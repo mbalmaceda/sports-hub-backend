@@ -49,5 +49,15 @@ func sweepExpired(ctx context.Context, deps Deps, now time.Time) error {
 	if err := deps.Competitions.ExpireStaleInvitations(ctx, now); err != nil {
 		return fmt.Errorf("expire stale invitations: %w", err)
 	}
+
+	// Las búsquedas de rival vencidas son solo higiene: el listado ya filtra
+	// por `expires_at` y nadie puede pedir una vencida. Sus pedidos abiertos
+	// los vence el `ExpireStale` de arriba, porque su plazo nunca supera el de
+	// la búsqueda.
+	if deps.Searches != nil {
+		if err := deps.Searches.ExpireStale(ctx, now); err != nil {
+			return fmt.Errorf("expire stale friendly searches: %w", err)
+		}
+	}
 	return failed
 }
