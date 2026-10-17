@@ -37,6 +37,11 @@ type TeamInvitation struct {
 	Status          InvitationStatus `json:"status"`
 	CreatedAt       time.Time        `json:"created_at"`
 	RespondedAt     *time.Time       `json:"responded_at,omitempty"`
+
+	// Del invitado (`UserID`). Solo vienen en los listados: la pantalla del
+	// manager tiene que decir a quién se invitó, no solo cuándo.
+	FullName string `json:"full_name,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 type JoinRequestStatus string

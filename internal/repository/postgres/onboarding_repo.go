@@ -82,28 +82,42 @@ func scanTeamInvitation(row pgx.Row) (*onboarding.TeamInvitation, error) {
 	return inv, err
 }
 
-func collectInvitations(rows pgx.Rows) ([]*onboarding.TeamInvitation, error) {
-	return collect(rows, scanTeamInvitation)
+// Los listados traen el nombre y el correo del invitado embebidos, igual que las
+// solicitudes: la fila sin eso solo dice una fecha, y resolverlos aparte sería
+// una consulta por invitación para pintar un nombre.
+const invitationListCols = `
+	i.id, i.team_id, i.invited_by_user_id, i.user_id, i.status, i.created_at, i.responded_at,
+	u.name, u.email`
+
+func scanListedInvitation(row pgx.Row) (*onboarding.TeamInvitation, error) {
+	inv := &onboarding.TeamInvitation{}
+	err := row.Scan(
+		&inv.ID, &inv.TeamID, &inv.InvitedByUserID, &inv.UserID,
+		&inv.Status, &inv.CreatedAt, &inv.RespondedAt,
+		&inv.FullName, &inv.Email,
+	)
+	return inv, err
+}
+
+func (r *OnboardingRepository) listInvitations(ctx context.Context, where string, arg string) ([]*onboarding.TeamInvitation, error) {
+	q := `SELECT` + invitationListCols + `
+		FROM team_invitations i JOIN users u ON u.id = i.user_id
+		WHERE ` + where + `
+		ORDER BY i.created_at DESC`
+	rows, err := r.pool.Query(ctx, q, arg)
+	if err != nil {
+		return nil, fmt.Errorf("onboarding.listInvitations: %w", err)
+	}
+	defer rows.Close()
+	return collect(rows, scanListedInvitation)
 }
 
 func (r *OnboardingRepository) ListInvitationsForTeam(ctx context.Context, teamID string) ([]*onboarding.TeamInvitation, error) {
-	q := `SELECT` + invitationCols + ` FROM team_invitations WHERE team_id = $1 ORDER BY created_at DESC`
-	rows, err := r.pool.Query(ctx, q, teamID)
-	if err != nil {
-		return nil, fmt.Errorf("onboarding.ListInvitationsForTeam: %w", err)
-	}
-	defer rows.Close()
-	return collectInvitations(rows)
+	return r.listInvitations(ctx, "i.team_id = $1", teamID)
 }
 
 func (r *OnboardingRepository) ListInvitationsForUser(ctx context.Context, userID string) ([]*onboarding.TeamInvitation, error) {
-	q := `SELECT` + invitationCols + ` FROM team_invitations WHERE user_id = $1 ORDER BY created_at DESC`
-	rows, err := r.pool.Query(ctx, q, userID)
-	if err != nil {
-		return nil, fmt.Errorf("onboarding.ListInvitationsForUser: %w", err)
-	}
-	defer rows.Close()
-	return collectInvitations(rows)
+	return r.listInvitations(ctx, "i.user_id = $1", userID)
 }
 
 func (r *OnboardingRepository) FindInvitation(ctx context.Context, id string) (*onboarding.TeamInvitation, error) {
