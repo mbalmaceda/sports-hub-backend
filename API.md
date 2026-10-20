@@ -216,7 +216,7 @@ Lista todos los equipos activos.
 }
 ```
 
-`name`, `sport_id`, `category` y `currency` son obligatorios; `city` y `description`
+`name`, `sport_id` y `currency` son obligatorios; `category`, `city` y `description`
 son opcionales y viajan vacías si el alta no las pidió.
 
 **Response 201** — objeto Team  
@@ -1165,6 +1165,69 @@ equipo entero y empieza a deberle la cuota mensual.
 
 ---
 
+## Enlace para unirse al equipo
+
+El que el manager tira al grupo de WhatsApp para que se sumen al **club** los que
+todavía no tienen la app. Mismo molde que el de los parches —token al portador
+que se ve una sola vez, cupo descontado en la transacción del canje— pero lo que
+crea es una membresía de plantel (`kind: "member"`), no de invitado.
+
+El cupo (30) y el plazo (7 días) los fija el servidor; el cliente no manda nada.
+
+### POST `/teams/:id/invite-links` 🔒
+Solo el manager.
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "token": "…",
+  "url": "https://sports-hub-backend.fly.dev/e/…",
+  "team_id": "uuid",
+  "max_uses": 30,
+  "used_count": 0,
+  "remaining_uses": 30,
+  "usable": true,
+  "expires_at": "2026-10-27T15:00:00Z",
+  "created_at": "2026-10-20T15:00:00Z"
+}
+```
+`url` viene vacía si `PUBLIC_BASE_URL` no está configurado: el cliente no comparte
+nada. El `token` no se puede volver a leer.
+
+### GET `/teams/:id/invite-links` 🔒
+Solo el manager. **Response 200** — array de `{ id, team_id, max_uses, used_count, remaining_uses, usable, expires_at, created_at }`, sin token.
+
+### DELETE `/team-invite-links/:linkId` 🔒
+Solo el manager del equipo del enlace. No saca a nadie que ya haya entrado.
+**Response 200** `{ "status": "revoked" }`
+
+### GET `/team-links/:token` — **público, sin sesión**
+Lo que ve quien abre el enlace. Todo lo que sale acá se da por publicado.
+
+**Response 200**
+```json
+{
+  "team_name": "Deportivo Norte",
+  "sport_id": "football",
+  "city": "Santiago",
+  "description": "¡Vamos Norte!",
+  "invited_by": "Mirko",
+  "remaining_uses": 28,
+  "expires_at": "2026-10-27T15:00:00Z"
+}
+```
+**404** no existe · **410** vencido, anulado o lleno
+
+### POST `/team-links/:token/accept` 🔒
+Canjea con la cuenta de quien lo abre. El parche de ese equipo sube su misma
+membresía; el que se había ido vuelve sobre su fila.
+
+**Response 200** `{ "membership_id": "uuid", "team_id": "uuid" }`  
+**404** no existe · **409** ya es del equipo (activo o suspendido; no gasta cupo) · **410** vencido, anulado o lleno
+
+---
+
 ## Páginas públicas de enlaces — **sin sesión**
 
 Las sirve el propio backend porque el destinatario de un enlace de invitación es,
@@ -1182,6 +1245,11 @@ Con la app instalada y los App Links verificados, el sistema operativo intercept
 antes y abre la app directo — esta página es lo que ve quien **no** la tiene.
 
 **200** invitación vigente · **404** no existe · **410** vencida, revocada o llena
+
+### GET `/e/:token`
+La misma página para el enlace de unirse al equipo. El botón "Ya tengo la app"
+abre `zports://join/<token>`. Es un prefijo propio y no `/i/` porque la app 1.0.x
+abre `/i/` como invitación a un partido: con `/e/`, la versión vieja cae acá.
 
 ### GET `/.well-known/assetlinks.json`
 Lo que hace que Android abra la app en vez del navegador. Sale de

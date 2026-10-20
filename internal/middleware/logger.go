@@ -15,6 +15,9 @@ import (
 // high"—; si llega a ser grande, el resto sobra.
 const maxLoggedBodyBytes = 512
 
+// healthRoute es la ruta del chequeo de Fly (ver `fly.toml`).
+const healthRoute = "/health"
+
 // Logger reemplaza a gin.Logger(), que escribe texto plano mientras el resto de
 // la app escribe JSON con slog: dos formatos en el mismo stream son imposibles
 // de consultar o alertar en Fly.
@@ -22,6 +25,10 @@ const maxLoggedBodyBytes = 512
 // Loguea la ruta declarada (c.FullPath(), o sea "/teams/:id") y no la pedida,
 // porque la pedida trae ids que son datos personales y además hacen que cada
 // request sea una serie distinta al agrupar.
+//
+// No loguea el chequeo de salud que sale bien: Fly lo pide cada 30 segundos y
+// tapaba todo lo demás. Si falla sí se loguea, porque eso es justo lo que hay
+// que ver.
 //
 // En un 4xx/5xx también loguea el cuerpo de la respuesta: los handlers
 // devuelven el mensaje de error en el JSON pero no siempre lo adjuntan a
@@ -35,6 +42,9 @@ func Logger(logger *slog.Logger) gin.HandlerFunc {
 		c.Next()
 
 		route := c.FullPath()
+		if route == healthRoute && c.Writer.Status() < 400 {
+			return
+		}
 		if route == "" {
 			route = "unmatched"
 		}

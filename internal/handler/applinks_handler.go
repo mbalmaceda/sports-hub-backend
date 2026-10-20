@@ -12,6 +12,7 @@ import (
 
 	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/guest"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/teamlink"
 )
 
 /*
@@ -27,7 +28,8 @@ infraestructura de más para tres archivos.
 
 Las tres piezas:
 
-	GET /i/:token                            la página que ve la persona
+	GET /i/:token                            la página que ve la persona (partido)
+	GET /e/:token                            la misma, para unirse al equipo
 	GET /.well-known/assetlinks.json         Android verifica y abre la app
 	GET /.well-known/apple-app-site-association   iOS, lo mismo
 
@@ -37,11 +39,12 @@ de Play, y con la app en dos entornos no son la misma.
 */
 type AppLinksHandler struct {
 	invites guest.Repository
+	links   teamlink.Repository
 	cfg     config.Config
 }
 
-func NewAppLinksHandler(invites guest.Repository, cfg config.Config) *AppLinksHandler {
-	return &AppLinksHandler{invites: invites, cfg: cfg}
+func NewAppLinksHandler(invites guest.Repository, links teamlink.Repository, cfg config.Config) *AppLinksHandler {
+	return &AppLinksHandler{invites: invites, links: links, cfg: cfg}
 }
 
 /*
@@ -77,7 +80,8 @@ AppleAppSiteAssociation GET /.well-known/apple-app-site-association
 El equivalente de iOS. Va sin extensión y con Content-Type de JSON, que es como
 lo pide Apple.
 
-`paths` acota qué URLs abre la app: solo las invitaciones. Con "*" el sistema le
+`paths` acota qué URLs abre la app: solo las invitaciones, al partido (`/i/`) y
+al equipo (`/e/`). Con "*" el sistema le
 entregaría también la documentación o cualquier página futura de este dominio.
 */
 func (h *AppLinksHandler) AppleAppSiteAssociation(c *gin.Context) {
@@ -92,7 +96,7 @@ func (h *AppLinksHandler) AppleAppSiteAssociation(c *gin.Context) {
 			"apps": []string{},
 			"details": []gin.H{{
 				"appID": h.cfg.AppleAppID,
-				"paths": []string{"/i/*"},
+				"paths": []string{"/i/*", "/e/*"},
 			}},
 		},
 	})
@@ -160,6 +164,56 @@ func (h *AppLinksHandler) InvitePage(c *gin.Context) {
 	h.renderPage(c, http.StatusOK, invitePageData{
 		Title:     "Te invitaron a jugar",
 		Body:      "Descarga ZPORTS para ver el partido y confirmar si vas.",
+		AppURL:    appURL,
+		StoreURL:  h.cfg.PlayStoreURL,
+		ShowLinks: true,
+	})
+}
+
+/*
+TeamLinkPage GET /e/:token
+
+La página del enlace para unirse al equipo. Es la misma pieza que InvitePage
+—HTML plano, sin JavaScript, el puente hacia la app— con otros textos: acá no
+hay partido ni costo, hay un equipo que te quiere adentro.
+
+La app vieja (1.0.x) no conoce `/e/`, así que el sistema no la intercepta y su
+dueño cae acá: el botón de la tienda es también el de actualizar.
+*/
+func (h *AppLinksHandler) TeamLinkPage(c *gin.Context) {
+	token := c.Param("token")
+
+	inv, err := h.links.FindByTokenHash(c.Request.Context(), hashInviteToken(token))
+	if errors.Is(err, teamlink.ErrNotFound) {
+		h.renderPage(c, http.StatusNotFound, invitePageData{
+			Title: "Esta invitación no existe",
+			Body:  "Puede que el enlace esté incompleto. Pídele uno nuevo a quien te invitó.",
+		})
+		return
+	}
+	if err != nil {
+		h.renderPage(c, http.StatusInternalServerError, invitePageData{
+			Title: "No pudimos abrir la invitación",
+			Body:  "Vuelve a intentarlo en un momento.",
+		})
+		return
+	}
+
+	if !inv.Usable(time.Now()) {
+		h.renderPage(c, http.StatusGone, invitePageData{
+			Title: "Este enlace ya no sirve",
+			Body:  "Venció, se llenaron los lugares o lo anularon. Pídele uno nuevo a quien te invitó.",
+		})
+		return
+	}
+
+	// Mismo resguardo que en InvitePage: esquema y ruta constantes, el token
+	// escapado. `join/` es la pantalla del enlace al equipo en la app.
+	appURL := template.URL("zports://join/" + url.PathEscape(token))
+
+	h.renderPage(c, http.StatusOK, invitePageData{
+		Title:     "Te invitaron a un equipo",
+		Body:      "Descarga ZPORTS para ver el equipo y sumarte.",
 		AppURL:    appURL,
 		StoreURL:  h.cfg.PlayStoreURL,
 		ShowLinks: true,

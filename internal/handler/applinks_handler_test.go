@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -35,7 +36,7 @@ func TestInvitePage_AllowsItsOwnStyles(t *testing.T) {
 	invites := &testutil.MockGuestInviteRepo{}
 	invites.On("FindByTokenHash", mock.Anything, mock.Anything).Return(openInvite(), nil)
 
-	h := handler.NewAppLinksHandler(invites, config.Config{PublicBaseURL: "https://zports.test"})
+	h := handler.NewAppLinksHandler(invites, &testutil.MockTeamLinkRepo{}, config.Config{PublicBaseURL: "https://zports.test"})
 
 	r := gin.New()
 	r.Use(middleware.SecureHeaders())
@@ -60,4 +61,45 @@ func TestInvitePage_AllowsItsOwnStyles(t *testing.T) {
 	// igual el día que la página deje de tener <style> y nadie se enteraría de
 	// que la CSP quedó permitiendo algo que ya no hace falta.
 	assert.True(t, strings.Contains(w.Body.String(), "<style>"))
+}
+
+// La página del enlace al equipo abre la app en `join/`, la pantalla del enlace
+// al equipo, y no en `invite/`, que es la del partido: con la equivocada, quien
+// tiene la app vería "esta invitación no existe".
+func TestTeamLinkPage_OpensTheJoinScreen(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	links := &testutil.MockTeamLinkRepo{}
+	links.On("FindByTokenHash", mock.Anything, hashFor("tok")).Return(openTeamLink(), nil)
+
+	h := handler.NewAppLinksHandler(&testutil.MockGuestInviteRepo{}, links, config.Config{PublicBaseURL: "https://zports.test"})
+
+	r := gin.New()
+	r.GET("/e/:token", h.TeamLinkPage)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/e/tok", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "zports://join/tok")
+}
+
+func TestTeamLinkPage_ExpiredIsGone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	expired := openTeamLink()
+	expired.ExpiresAt = expired.CreatedAt.Add(-time.Hour)
+	links := &testutil.MockTeamLinkRepo{}
+	links.On("FindByTokenHash", mock.Anything, mock.Anything).Return(expired, nil)
+
+	h := handler.NewAppLinksHandler(&testutil.MockGuestInviteRepo{}, links, config.Config{})
+
+	r := gin.New()
+	r.GET("/e/:token", h.TeamLinkPage)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/e/tok", nil))
+
+	assert.Equal(t, http.StatusGone, w.Code)
+	assert.NotContains(t, w.Body.String(), "zports://")
 }

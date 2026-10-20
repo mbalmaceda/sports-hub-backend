@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/onboarding"
 	"github.com/mbalmaceda/sports-hub-backend/internal/handler"
@@ -21,7 +22,7 @@ func newOnboardingHandler(
 	teams *testutil.MockTeamRepo,
 	members *testutil.MockMembershipRepo,
 ) *handler.OnboardingHandler {
-	return handler.NewOnboardingHandler(repo, teams, members, nil, nil, nil)
+	return handler.NewOnboardingHandler(repo, teams, members, nil, nil, nil, nil, config.Config{})
 }
 
 // Una invitación la responde la persona invitada, nunca el equipo que invitó.

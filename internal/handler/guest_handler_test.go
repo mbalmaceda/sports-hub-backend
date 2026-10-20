@@ -704,7 +704,7 @@ func TestPromoteGuest_ConflictWhenAlreadySquad(t *testing.T) {
 // Sin fingerprints, 404 y no un array vacío: un assetlinks vacío le dice a
 // Android "acá no hay ninguna app asociada" y queda cacheado así.
 func TestAssetLinks_NotFoundWhenUnconfigured(t *testing.T) {
-	h := handler.NewAppLinksHandler(&testutil.MockGuestInviteRepo{}, config.Config{})
+	h := handler.NewAppLinksHandler(&testutil.MockGuestInviteRepo{}, &testutil.MockTeamLinkRepo{}, config.Config{})
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -716,7 +716,7 @@ func TestAssetLinks_NotFoundWhenUnconfigured(t *testing.T) {
 }
 
 func TestAssetLinks_ServesConfiguredFingerprints(t *testing.T) {
-	h := handler.NewAppLinksHandler(&testutil.MockGuestInviteRepo{}, config.Config{
+	h := handler.NewAppLinksHandler(&testutil.MockGuestInviteRepo{}, &testutil.MockTeamLinkRepo{}, config.Config{
 		AndroidPackageName:      "com.zports.app",
 		AndroidCertFingerprints: []string{"AA:BB:CC"},
 	})
@@ -737,7 +737,7 @@ func TestAssetLinks_ServesConfiguredFingerprints(t *testing.T) {
 // escapado, o el enlace es una inyección de HTML servida desde el dominio propio.
 func TestInvitePage_EscapesTheTokenInHTML(t *testing.T) {
 	invites := &testutil.MockGuestInviteRepo{}
-	h := handler.NewAppLinksHandler(invites, config.Config{PlayStoreURL: "https://play.example"})
+	h := handler.NewAppLinksHandler(invites, &testutil.MockTeamLinkRepo{}, config.Config{PlayStoreURL: "https://play.example"})
 
 	nasty := `"><script>alert(1)</script>`
 	invites.On("FindByTokenHash", mock.Anything, hashFor(nasty)).Return(openInvite(), nil)
@@ -755,7 +755,7 @@ func TestInvitePage_EscapesTheTokenInHTML(t *testing.T) {
 
 func TestInvitePage_GoneWhenInviteIsUsedUp(t *testing.T) {
 	invites := &testutil.MockGuestInviteRepo{}
-	h := handler.NewAppLinksHandler(invites, config.Config{})
+	h := handler.NewAppLinksHandler(invites, &testutil.MockTeamLinkRepo{}, config.Config{})
 
 	inv := openInvite()
 	inv.UsedCount = inv.MaxUses
@@ -780,7 +780,7 @@ func TestInvitePage_GoneWhenInviteIsUsedUp(t *testing.T) {
 // configurada— así que muerto no sirve de nada.
 func TestInvitePage_AppSchemeSurvivesTemplateEscaping(t *testing.T) {
 	invites := &testutil.MockGuestInviteRepo{}
-	h := handler.NewAppLinksHandler(invites, config.Config{})
+	h := handler.NewAppLinksHandler(invites, &testutil.MockTeamLinkRepo{}, config.Config{})
 
 	invites.On("FindByTokenHash", mock.Anything, hashFor("aX9tok")).Return(openInvite(), nil)
 

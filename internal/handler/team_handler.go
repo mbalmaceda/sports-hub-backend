@@ -38,11 +38,15 @@ func (h *TeamHandler) Create(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string `json:"name"       binding:"required"`
-		SportID  string `json:"sport_id"   binding:"required"`
-		Category string `json:"category"   binding:"required"`
-		// Opcionales: un equipo puede nacer sin ciudad ni descripción, y el alta
-		// no las pide como requisito para no alargar el primer paso.
+		Name    string `json:"name"       binding:"required"`
+		SportID string `json:"sport_id"   binding:"required"`
+		// Opcionales: un equipo puede nacer sin categoría, ciudad ni
+		// descripción, y el alta no las pide como requisito para no alargar el
+		// primer paso. La categoría fue `required` acá mientras el wizard la
+		// dejaba vacía: quien no la escribía chocaba contra un 400 que la app
+		// mostraba como "no pudimos crear el equipo". La columna ya era
+		// `NOT NULL DEFAULT ''`.
+		Category    string `json:"category"`
 		City        string `json:"city"`
 		Description string `json:"description"`
 		ClubID      string `json:"club_id"`
@@ -79,6 +83,9 @@ func (h *TeamHandler) Create(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "team name already taken"})
 			return
 		}
+		// Al cliente no le sirve la causa, al log sí: sin esto un 500 del alta
+		// es solo "could not create team".
+		_ = c.Error(err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create team"})
 		return
 	}
@@ -96,6 +103,7 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		Status:        membership.StatusActive,
 	}
 	if err := h.memberships.Create(c.Request.Context(), m); err != nil {
+		_ = c.Error(err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "team created but could not assign manager membership"})
 		return
 	}

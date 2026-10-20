@@ -116,7 +116,7 @@ func TestCreateTeam_ValidationError(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	contextWithClaims(c, "user-1")
-	// sport_id y category son required
+	// sport_id es required
 	c.Request = httptest.NewRequest(http.MethodPost, "/teams",
 		strings.NewReader(`{"name":"Solo nombre"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
@@ -124,6 +124,31 @@ func TestCreateTeam_ValidationError(t *testing.T) {
 	h.Create(c)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// La categoría es opcional: el wizard la deja vacía y el alta tiene que salir
+// igual. Mientras fue `required`, quien no la escribía no podía crear su equipo.
+func TestCreateTeam_WithoutCategory(t *testing.T) {
+	teamRepo := &testutil.MockTeamRepo{}
+	memberRepo := &testutil.MockMembershipRepo{}
+	h := newTeamHandler(teamRepo, memberRepo)
+
+	teamRepo.On("Create", mock.Anything, mock.MatchedBy(func(tm *team.Team) bool {
+		return tm.Category == ""
+	})).Return(nil)
+	memberRepo.On("Create", mock.Anything, mock.AnythingOfType("*membership.Membership")).Return(nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	contextWithClaims(c, "creator-user")
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams",
+		strings.NewReader(`{"name":"Sin Categoría FC","sport_id":"football","category":"","city":"","description":"","currency":"CLP","fee_amount":0,"fee_due_day":5,"plays_as_player":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.Create(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	teamRepo.AssertExpectations(t)
 }
 
 func TestCreateTeam_MembershipFails(t *testing.T) {

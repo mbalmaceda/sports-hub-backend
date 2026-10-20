@@ -66,6 +66,7 @@ func main() {
 	expenseRepo := postgres.NewExpenseRepository(pool)
 	onboardingRepo := postgres.NewOnboardingRepository(pool)
 	guestInviteRepo := postgres.NewGuestInviteRepository(pool)
+	teamLinkRepo := postgres.NewTeamLinkRepository(pool)
 	settlementRepo := postgres.NewSettlementRepository(pool)
 	notificationRepo := postgres.NewNotificationRepository(pool)
 	pushTokenRepo := postgres.NewPushTokenRepository(pool)
@@ -185,11 +186,11 @@ func main() {
 	settlementHandler := handler.NewSettlementHandler(
 		settlementRepo, competitionRepo, matchRepo, rosterRepo, teamRepo)
 	onboardingHandler := handler.NewOnboardingHandler(
-		onboardingRepo, teamRepo, rosterRepo, userRepo, notifications, firebaseAuth)
+		onboardingRepo, teamRepo, rosterRepo, userRepo, notifications, firebaseAuth, teamLinkRepo, cfg)
 	guestHandler := handler.NewGuestHandler(
 		guestInviteRepo, matchRepo, rosterRepo, competitionRepo, chargeRepo, teamRepo, userRepo,
 		firebaseAuth, notifications, cfg)
-	appLinksHandler := handler.NewAppLinksHandler(guestInviteRepo, cfg)
+	appLinksHandler := handler.NewAppLinksHandler(guestInviteRepo, teamLinkRepo, cfg)
 	notificationHandler := handler.NewNotificationHandler(notificationRepo, pushTokenRepo, rosterRepo, notifications)
 
 	// Router
@@ -249,12 +250,15 @@ func main() {
 	// sesión para ver a qué lo invitan sería pedirle que se registre a ciegas.
 	// Lo que devuelve está recortado para que sea seguro publicarlo.
 	r.GET("/invites/:token", inviteByIP.ByIP(), guestHandler.GetInvite)
+	// Lo mismo para el enlace de unirse al equipo, con el mismo limitador.
+	r.GET("/team-links/:token", inviteByIP.ByIP(), onboardingHandler.GetTeamLink)
 
 	// El enlace que se comparte por WhatsApp apunta acá: una página HTML que
 	// abre la app si está instalada y ofrece descargarla si no. Los dos
 	// .well-known son lo que hace que el sistema operativo se salte la página y
 	// abra la app directo. Ver internal/handler/applinks_handler.go.
 	r.GET("/i/:token", inviteByIP.ByIP(), appLinksHandler.InvitePage)
+	r.GET("/e/:token", inviteByIP.ByIP(), appLinksHandler.TeamLinkPage)
 	r.GET("/.well-known/assetlinks.json", appLinksHandler.AssetLinks)
 	r.GET("/.well-known/apple-app-site-association", appLinksHandler.AppleAppSiteAssociation)
 
@@ -425,6 +429,10 @@ func main() {
 		protected.GET("/teams/:id/join-requests", onboardingHandler.ListJoinRequests)
 		protected.POST("/teams/:id/join-requests", onboardingHandler.RequestToJoin)
 		protected.POST("/join-requests/:requestId/respond", onboardingHandler.RespondToJoinRequest)
+		protected.GET("/teams/:id/invite-links", onboardingHandler.ListTeamLinks)
+		protected.POST("/teams/:id/invite-links", onboardingHandler.CreateTeamLink)
+		protected.DELETE("/team-invite-links/:linkId", onboardingHandler.RevokeTeamLink)
+		protected.POST("/team-links/:token/accept", onboardingHandler.AcceptTeamLink)
 	}
 
 	// Admin: hoy, una llave de servicio para cargar el catálogo de canchas con

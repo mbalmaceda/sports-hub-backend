@@ -10,10 +10,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/mbalmaceda/sports-hub-backend/internal/config"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/membership"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/notification"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/onboarding"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/team"
+	"github.com/mbalmaceda/sports-hub-backend/internal/domain/teamlink"
 	"github.com/mbalmaceda/sports-hub-backend/internal/domain/user"
 	"github.com/mbalmaceda/sports-hub-backend/internal/firebase"
 	"github.com/mbalmaceda/sports-hub-backend/internal/notify"
@@ -28,7 +30,12 @@ type OnboardingHandler struct {
 	users         user.Repository
 	notifications *notify.Service
 	firebase      *firebase.Firebase
-	authz         teamAuthorizer
+	// El enlace para unirse al equipo vive acá y no en un handler propio
+	// porque termina igual que las otras dos puertas: `syncMirror` y
+	// `announceJoin`. Ver `team_link_handler.go`.
+	links teamlink.Repository
+	cfg   config.Config
+	authz teamAuthorizer
 }
 
 func NewOnboardingHandler(
@@ -38,6 +45,8 @@ func NewOnboardingHandler(
 	users user.Repository,
 	notifications *notify.Service,
 	fb *firebase.Firebase,
+	links teamlink.Repository,
+	cfg config.Config,
 ) *OnboardingHandler {
 	return &OnboardingHandler{
 		onboarding:    repo,
@@ -46,6 +55,8 @@ func NewOnboardingHandler(
 		users:         users,
 		notifications: notifications,
 		firebase:      fb,
+		links:         links,
+		cfg:           cfg,
 		authz:         teamAuthorizer{memberships: memberships},
 	}
 }
