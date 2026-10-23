@@ -107,6 +107,11 @@ type Config struct {
 	// sirva para entrar acá. Vacío desactiva el endpoint.
 	GoogleClientIDs []string
 
+	// AppleClientIDs son las audiencias del identity token de Sign in with
+	// Apple: el bundle id de la app iOS (`com.zports.app`). Mismo papel que las
+	// de Google. Vacío desactiva `/auth/apple`.
+	AppleClientIDs []string
+
 	// ── Admin ────────────────────────────────────────────────────────────────
 
 	// AdminToken es la llave de servicio de `/admin` (ver
@@ -114,6 +119,11 @@ type Config struct {
 	// que tener al menos 32 caracteres: protege la escritura del catálogo, y
 	// una llave corta se adivina.
 	AdminToken string
+}
+
+// AppleSignInEnabled indica si se puede entrar con Apple.
+func (c Config) AppleSignInEnabled() bool {
+	return len(c.AppleClientIDs) > 0
 }
 
 // GoogleSignInEnabled indica si se puede entrar con Google.
@@ -230,6 +240,13 @@ func Load() (Config, error) {
 		}
 	}
 
+	appleClientIDs := make([]string, 0)
+	for _, raw := range strings.Split(os.Getenv("APPLE_CLIENT_IDS"), ",") {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			appleClientIDs = append(appleClientIDs, trimmed)
+		}
+	}
+
 	androidPackage := strings.TrimSpace(os.Getenv("ANDROID_PACKAGE_NAME"))
 	if androidPackage == "" {
 		androidPackage = "com.zports.app"
@@ -262,6 +279,7 @@ func Load() (Config, error) {
 		AppleAppID:              strings.TrimSpace(os.Getenv("APPLE_APP_ID")),
 		PlayStoreURL:            strings.TrimSpace(os.Getenv("PLAY_STORE_URL")),
 		GoogleClientIDs:         googleClientIDs,
+		AppleClientIDs:          appleClientIDs,
 		AdminToken:              adminToken,
 	}, nil
 }

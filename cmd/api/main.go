@@ -162,8 +162,12 @@ func main() {
 	// Sin GOOGLE_CLIENT_IDS el verificador es nil y el endpoint de Google
 	// contesta 503: la app puede preguntar y enterarse, en vez de mandar tokens
 	// contra algo que no está configurado.
+	// Lo mismo con APPLE_CLIENT_IDS y `/auth/apple`.
 	googleVerifier := auth.NewGoogleVerifier(cfg.GoogleClientIDs)
-	authHandler := handler.NewAuthHandler(userRepo, tokenRepo, signer, loginByAccount, googleVerifier, slog.Default())
+	appleVerifier := auth.NewAppleVerifier(cfg.AppleClientIDs)
+	authHandler := handler.NewAuthHandler(
+		userRepo, tokenRepo, signer, loginByAccount, googleVerifier, appleVerifier, slog.Default(),
+	)
 	userHandler := handler.NewUserHandler(userRepo)
 	firebaseHandler := handler.NewFirebaseHandler(firebaseAuth)
 	teamHandler := handler.NewTeamHandler(teamRepo, rosterRepo, firebaseAuth)
@@ -242,6 +246,7 @@ func main() {
 	// por cuenta: acá no hay contraseña que adivinar, la credencial la firma
 	// Google.
 	r.POST("/auth/google", loginByIP.ByIP(), authHandler.GoogleSignIn)
+	r.POST("/auth/apple", loginByIP.ByIP(), authHandler.AppleSignIn)
 	r.POST("/auth/refresh", refreshByIP.ByIP(), authHandler.Refresh)
 	r.POST("/auth/logout", authHandler.Logout)
 

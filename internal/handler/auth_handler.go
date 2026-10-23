@@ -63,6 +63,8 @@ type AuthHandler struct {
 	loginLimiter AttemptLimiter
 	// google es nil cuando la instalación no tiene Google Sign-In configurado.
 	google auth.GoogleVerifier
+	// apple, lo mismo para Sign in with Apple.
+	apple  auth.AppleVerifier
 	logger *slog.Logger
 }
 
@@ -72,6 +74,7 @@ func NewAuthHandler(
 	signer *auth.Signer,
 	loginLimiter AttemptLimiter,
 	google auth.GoogleVerifier,
+	apple auth.AppleVerifier,
 	logger *slog.Logger,
 ) *AuthHandler {
 	if logger == nil {
@@ -83,6 +86,7 @@ func NewAuthHandler(
 		signer:       signer,
 		loginLimiter: loginLimiter,
 		google:       google,
+		apple:        apple,
 		logger:       logger,
 	}
 }
@@ -250,10 +254,7 @@ Dos reglas sostienen que esto sea seguro:
     paso siguiente —vincular por correo— sin que nadie se quede con una cuenta
     ajena declarando un correo que no es suyo.
 
-Con eso, un correo que ya existe **entra a esa cuenta** en vez de crear otra. Es
-lo que evita que quien se registró con contraseña y después toca "Entrar con
-Google" termine con dos cuentas, cada una con su equipo, y sin entender por qué
-no ve nada de lo suyo.
+Con eso, el correo se vincula a la cuenta que ya tenga (ver `socialSignIn`).
 */
 func (h *AuthHandler) GoogleSignIn(c *gin.Context) {
 	if h.google == nil {
@@ -284,30 +285,95 @@ func (h *AuthHandler) GoogleSignIn(c *gin.Context) {
 		return
 	}
 
+	h.socialSignIn(c, email, identity.Name, "google")
+}
+
+/*
+AppleSignIn POST /auth/apple — entrar con Sign in with Apple.
+
+Existe porque la App Store lo exige: una app que ofrece entrar con Google tiene
+que ofrecer también una opción que deje ocultar el correo (regla 4.8). Es la
+misma puerta que Google con otro verificador, y por eso termina en el mismo
+`socialSignIn`.
+
+Dos diferencias con Google:
+
+  - El **nombre** no viene en el token. Apple lo entrega una sola vez, en el
+    primer ingreso y del lado del teléfono, así que la app lo manda en el body.
+    Solo se usa al crear la cuenta: es justo la vez que llega.
+  - El correo puede ser un **relay privado** (`…@privaterelay.appleid.com`) si
+    la persona eligió ocultarlo. Es estable para esta app, así que la cuenta se
+    vincula igual; lo que no hace es encontrar la cuenta que la persona ya tenía
+    con su correo real. Esa termina siendo otra cuenta, y es lo que la persona
+    eligió al ocultar su correo.
+*/
+func (h *AuthHandler) AppleSignIn(c *gin.Context) {
+	if h.apple == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "apple sign-in is not configured"})
+		return
+	}
+
+	var req struct {
+		IdentityToken string `json:"identity_token" binding:"required"`
+		Name          string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	identity, err := h.apple.Verify(c.Request.Context(), req.IdentityToken)
+	if err != nil {
+		h.logger.Warn("apple identity token rejected", "error", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid apple token"})
+		return
+	}
+
+	email := user.NormalizeEmail(identity.Email)
+	if email == "" || !identity.EmailVerified {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "apple account has no verified email"})
+		return
+	}
+
+	h.socialSignIn(c, email, req.Name, "apple")
+}
+
+/*
+socialSignIn es lo que comparten Google y Apple una vez que el proveedor dio
+fe del correo: entrar a la cuenta de ese correo, o crearla.
+
+Un correo que ya existe **entra a esa cuenta** en vez de crear otra. Es lo que
+evita que quien se registró con contraseña y después toca "Continuar con
+Google" termine con dos cuentas, cada una con su equipo, y sin entender por qué
+no ve nada de lo suyo.
+*/
+func (h *AuthHandler) socialSignIn(c *gin.Context, email, name, provider string) {
 	u, err := h.users.FindByEmail(c.Request.Context(), email)
 	switch {
 	case err == nil:
 		// Ya existe: se entra a esa cuenta. No se toca nada de su perfil —el
-		// nombre que tenga puesto es el que eligió, y Google no manda sobre eso.
+		// nombre que tenga puesto es el que eligió, y el proveedor no manda
+		// sobre eso.
 	case errors.Is(err, user.ErrNotFound):
 		/*
 			Cuenta nueva, sin contraseña.
 
 			`PasswordHash` queda vacío y así se queda: es lo que marca que a esta
-			cuenta se entra por Google. `Login` corta explícitamente cuando el
-			hash está vacío, así que nadie entra con una contraseña en blanco.
+			cuenta se entra por un proveedor. `Login` corta explícitamente cuando
+			el hash está vacío, así que nadie entra con una contraseña en blanco.
 
-			Si Google no manda nombre —puede pasar— se usa la parte local del
-			correo antes que dejar la cuenta sin nombre: el nombre se muestra en
-			la nómina y en los cobros, y una fila en blanco no se puede leer.
+			Si no hay nombre —Google puede no mandarlo, y Apple solo lo da la
+			primera vez— se usa la parte local del correo antes que dejar la
+			cuenta sin nombre: el nombre se muestra en la nómina y en los cobros,
+			y una fila en blanco no se puede leer.
 		*/
-		name := strings.TrimSpace(identity.Name)
+		name = strings.TrimSpace(name)
 		if name == "" {
 			name = email[:strings.Index(email, "@")]
 		}
 		u = &user.User{Name: name, Email: email}
 		if createErr := h.users.Create(c.Request.Context(), u); createErr != nil {
-			h.logger.Error("could not create user from google", "error", createErr)
+			h.logger.Error("could not create user from social sign-in", "provider", provider, "error", createErr)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create the account"})
 			return
 		}
