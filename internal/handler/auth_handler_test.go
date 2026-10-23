@@ -40,11 +40,30 @@ func newAuthHandlerWithGoogle(
 	tokenRepo *testutil.MockTokenRepo,
 	google auth.GoogleVerifier,
 ) *handler.AuthHandler {
+	return newAuthHandlerWithProviders(userRepo, tokenRepo, google, nil)
+}
+
+// newAuthHandlerWithApple, lo mismo para `/auth/apple`.
+func newAuthHandlerWithApple(
+	userRepo *testutil.MockUserRepo,
+	tokenRepo *testutil.MockTokenRepo,
+	apple auth.AppleVerifier,
+) *handler.AuthHandler {
+	return newAuthHandlerWithProviders(userRepo, tokenRepo, nil, apple)
+}
+
+func newAuthHandlerWithProviders(
+	userRepo *testutil.MockUserRepo,
+	tokenRepo *testutil.MockTokenRepo,
+	google auth.GoogleVerifier,
+	apple auth.AppleVerifier,
+) *handler.AuthHandler {
 	return handler.NewAuthHandler(
 		userRepo, tokenRepo,
 		auth.NewSigner(testSecret, ""),
 		nil, // sin límite por cuenta: lo que se prueba acá es el flujo, no el limitador
 		google,
+		apple,
 		slog.New(slog.DiscardHandler),
 	)
 }
@@ -578,6 +597,100 @@ func TestGoogleSignIn_UnavailableWhenNotConfigured(t *testing.T) {
 	h := newAuthHandler(&testutil.MockUserRepo{}, &testutil.MockTokenRepo{})
 
 	w := postGoogle(h, `{"id_token":"lo-que-sea"}`)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+// ─── Entrar con Apple ────────────────────────────────────────────────────────
+
+type fakeApple struct {
+	identity *auth.AppleIdentity
+	err      error
+}
+
+func (f fakeApple) Verify(context.Context, string) (*auth.AppleIdentity, error) {
+	return f.identity, f.err
+}
+
+func postApple(h *handler.AuthHandler, body string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/auth/apple", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.AppleSignIn(c)
+	return w
+}
+
+// Apple no pone el nombre en el token: llega en el body, y solo la primera vez.
+// Es justo cuando se crea la cuenta, así que tiene que quedar guardado ahí.
+func TestAppleSignIn_CreatesAccountWithNameFromBody(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+	userRepo.On("FindByEmail", mock.Anything, "abc123@privaterelay.appleid.com").Return(nil, user.ErrNotFound)
+	userRepo.On("Create", mock.Anything, mock.MatchedBy(func(u *user.User) bool {
+		return u.Email == "abc123@privaterelay.appleid.com" && u.Name == "Persona Apple" && u.PasswordHash == ""
+	})).Return(nil)
+	expectIssueTokens(tokenRepo)
+
+	h := newAuthHandlerWithApple(userRepo, tokenRepo, fakeApple{identity: &auth.AppleIdentity{
+		Subject: "apple-1", Email: "abc123@privaterelay.appleid.com", EmailVerified: true,
+	}})
+
+	w := postApple(h, `{"identity_token":"lo-que-sea","name":" Persona Apple "}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	userRepo.AssertExpectations(t)
+}
+
+// Los ingresos siguientes llegan sin nombre y no pueden pisar el que la
+// persona tenga puesto.
+func TestAppleSignIn_LinksExistingAccountByEmail(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+	existing := &user.User{ID: "user-1", Name: "Mirko", Email: "mirko@zports.cl"}
+	userRepo.On("FindByEmail", mock.Anything, "mirko@zports.cl").Return(existing, nil)
+	expectIssueTokens(tokenRepo)
+
+	h := newAuthHandlerWithApple(userRepo, tokenRepo, fakeApple{identity: &auth.AppleIdentity{
+		Subject: "apple-2", Email: "mirko@zports.cl", EmailVerified: true,
+	}})
+
+	w := postApple(h, `{"identity_token":"lo-que-sea"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	userRepo.AssertNotCalled(t, "Create")
+}
+
+func TestAppleSignIn_RejectsInvalidToken(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+
+	h := newAuthHandlerWithApple(userRepo, tokenRepo, fakeApple{err: auth.ErrInvalidAppleToken})
+
+	w := postApple(h, `{"identity_token":"falso"}`)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	userRepo.AssertNotCalled(t, "FindByEmail")
+}
+
+func TestAppleSignIn_RejectsMissingEmail(t *testing.T) {
+	userRepo := &testutil.MockUserRepo{}
+	tokenRepo := &testutil.MockTokenRepo{}
+
+	h := newAuthHandlerWithApple(userRepo, tokenRepo, fakeApple{identity: &auth.AppleIdentity{
+		Subject: "apple-3", Email: "", EmailVerified: false,
+	}})
+
+	w := postApple(h, `{"identity_token":"lo-que-sea"}`)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	userRepo.AssertNotCalled(t, "FindByEmail")
+}
+
+func TestAppleSignIn_UnavailableWhenNotConfigured(t *testing.T) {
+	h := newAuthHandler(&testutil.MockUserRepo{}, &testutil.MockTokenRepo{})
+
+	w := postApple(h, `{"identity_token":"lo-que-sea"}`)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
