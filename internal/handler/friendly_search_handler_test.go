@@ -383,3 +383,66 @@ func TestAcceptRequest_SearchAlreadyMatchedIsRejected(t *testing.T) {
 	mr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 	fr.AssertNotCalled(t, "UpdateStatus", mock.Anything, mock.Anything, mock.Anything)
 }
+
+func listSearches(userID, query string) (*httptest.ResponseRecorder, *gin.Context) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, userID)
+	c.Request = httptest.NewRequest(http.MethodGet, "/friendly-searches?"+query, nil)
+	return w, c
+}
+
+/*
+El mapa que sigue a la cámara: con área se lista el rectángulo y el total viaja
+en el header, para que la app pueda decir "N de M" cuando se corta.
+*/
+func TestListSearches_AreaListsTheRectangleWithTotal(t *testing.T) {
+	f := newSearchFixture()
+	f.memr.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).Return(managerOf(awayTeam, "user-away"), nil)
+	area := friendly.Area{South: -33.6, West: -70.8, North: -33.4, East: -70.6}
+	f.sr.On("ListInArea", mock.Anything, area, -33.45, -70.66, awayTeam, mock.Anything).
+		Return([]*friendly.Search{openSearch()}, 340, nil)
+
+	w, c := listSearches("user-away",
+		"team_id="+awayTeam+"&lat=-33.45&lng=-70.66&south=-33.6&west=-70.8&north=-33.4&east=-70.6")
+	f.h.ListNearby(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "340", w.Header().Get("X-Total-Count"))
+	f.sr.AssertNotCalled(t, "ListNearby", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestListSearches_InvalidAreaIsRejected(t *testing.T) {
+	cases := map[string]string{
+		"invertida":  "south=-33.4&west=-70.8&north=-33.6&east=-70.6",
+		"incompleta": "south=-33.6&west=-70.8&north=-33.4",
+		"fuera":      "south=-33.6&west=-70.8&north=-33.4&east=190",
+	}
+	for name, area := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newSearchFixture()
+			f.memr.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).Return(managerOf(awayTeam, "user-away"), nil)
+
+			w, c := listSearches("user-away", "team_id="+awayTeam+"&lat=-33.45&lng=-70.66&"+area)
+			f.h.ListNearby(c)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			f.sr.AssertNotCalled(t, "ListInArea", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
+// La 1.0.x sigue pidiendo por radio: sin área, el listado es el de siempre.
+func TestListSearches_WithoutAreaKeepsTheRadius(t *testing.T) {
+	f := newSearchFixture()
+	f.memr.On("FindByUserAndTeam", mock.Anything, "user-away", awayTeam).Return(managerOf(awayTeam, "user-away"), nil)
+	f.sr.On("ListNearby", mock.Anything, -33.45, -70.66, 10.0, awayTeam, mock.Anything).
+		Return([]*friendly.Search{openSearch()}, nil)
+
+	w, c := listSearches("user-away", "team_id="+awayTeam+"&lat=-33.45&lng=-70.66&radius_km=10")
+	f.h.ListNearby(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Header().Get("X-Total-Count"))
+	f.sr.AssertNotCalled(t, "ListInArea", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}

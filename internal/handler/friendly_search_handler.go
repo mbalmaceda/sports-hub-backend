@@ -76,10 +76,55 @@ func parseCoordinate(c *gin.Context) (float64, float64, bool) {
 }
 
 /*
-ListNearby GET /friendly-searches?team_id&lat&lng&radius_km
+parseArea lee el rectángulo del mapa (`south`, `west`, `north`, `east`). Sin
+ninguno de los cuatro no hay área (`present` en false) y el listado cae al modo
+por radio; con alguno, tienen que venir los cuatro y bien ordenados.
 
-El punto es el del teléfono de quien mira, no el de su equipo: la pregunta es
-"¿quién está buscando rival cerca de donde estoy?".
+No se exige un tamaño máximo: alejar el mapa no es un error, y lo que acota la
+respuesta es `MaxAreaResults`. Tampoco se aceptan áreas que crucen el
+antimeridiano (`west > east`), que en Chile no ocurren.
+*/
+func parseArea(c *gin.Context) (area friendly.Area, present, ok bool) {
+	keys := []string{"south", "west", "north", "east"}
+	values := make([]float64, len(keys))
+	for i, key := range keys {
+		raw := c.Query(key)
+		if raw == "" {
+			continue
+		}
+		present = true
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return area, true, false
+		}
+		values[i] = v
+	}
+	if !present {
+		return area, false, true
+	}
+	for _, key := range keys {
+		if c.Query(key) == "" {
+			return area, true, false
+		}
+	}
+	area = friendly.Area{South: values[0], West: values[1], North: values[2], East: values[3]}
+	if !venue.ValidCoordinate(area.South, area.West) || !venue.ValidCoordinate(area.North, area.East) ||
+		area.South >= area.North || area.West >= area.East {
+		return area, true, false
+	}
+	return area, true, true
+}
+
+/*
+ListNearby GET /friendly-searches?team_id&lat&lng&(south&west&north&east | radius_km)
+
+Dos modos. Con área es el mapa que sigue a la cámara: lo que cae en el
+rectángulo, como mucho `MaxAreaResults`, con el total en `X-Total-Count` para
+que la app diga "N de M". Sin área es el círculo alrededor del teléfono, que es
+lo que pide la 1.0.x y se queda mientras esa versión siga en Play.
+
+El punto es el del teléfono de quien mira, no el de su equipo: con él se mide
+`distance_km` en los dos modos.
 
 Exige ser del equipo de `team_id` —cualquier rol, sin invitados— porque el
 listado contesta además si ese equipo ya pidió cada búsqueda. Un jugador ve lo
@@ -98,6 +143,25 @@ func (h *FriendlySearchHandler) ListNearby(c *gin.Context) {
 	lat, lng, ok := parseCoordinate(c)
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "lat and lng are required"})
+		return
+	}
+
+	area, hasArea, ok := parseArea(c)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "south, west, north and east must describe a valid area"})
+		return
+	}
+	if hasArea {
+		items, total, err := h.searches.ListInArea(c.Request.Context(), area, lat, lng, teamID, time.Now())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list friendly searches"})
+			return
+		}
+		if items == nil {
+			items = []*friendly.Search{}
+		}
+		c.Header("X-Total-Count", strconv.Itoa(total))
+		c.JSON(http.StatusOK, items)
 		return
 	}
 

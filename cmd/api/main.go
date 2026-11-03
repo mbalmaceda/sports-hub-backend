@@ -225,7 +225,9 @@ func main() {
 			// tiene credenciales que mandar solo, y habilitarlas obligaría a
 			// dejar de aceptar orígenes por patrón.
 			AllowCredentials: false,
-			ExposeHeaders:    []string{"X-Request-Id"},
+			// X-Total-Count es el "N de M" del mapa de buscar rival: sin
+			// exponerlo, en el navegador la app lo lee vacío.
+			ExposeHeaders: []string{"X-Request-Id", "X-Total-Count"},
 			// Sin esto hay un preflight OPTIONS por cada request.
 			MaxAge: 12 * time.Hour,
 		}))

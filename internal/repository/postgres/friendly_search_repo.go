@@ -97,6 +97,42 @@ func (r *FriendlySearchRepository) FindByID(ctx context.Context, id string) (*fr
 }
 
 /*
+mapColumns son las dos columnas que el mapa agrega a cada búsqueda: la distancia
+al teléfono de quien mira ($1, $2) y el pedido abierto de su equipo ($8), si ya
+la pidió.
+
+openInBox es el filtro común de los dos listados: abiertas, sin vencer ($3) y
+con la cancha dentro del rectángulo ($4..$7), que usa el índice de (lat, lng).
+
+Los dos listados comparten la numeración de $1 a $8 para poder compartir estas
+piezas; lo que cada uno agrega va de $9 en adelante.
+*/
+var mapColumns = `,
+	` + haversineKm("v", "$1", "$2") + ` AS distance_km,
+	COALESCE((
+		SELECT fc.id::text FROM friendly_challenges fc
+		WHERE fc.search_id = s.id
+		  AND fc.challenged_team_id = $8
+		  AND fc.status IN ('pending', 'countered')
+		LIMIT 1
+	), '') AS requested_challenge_id`
+
+const openInBox = `
+	WHERE s.status = 'open'
+	  AND s.expires_at > $3
+	  AND v.lat BETWEEN $4 AND $5
+	  AND v.lng BETWEEN $6 AND $7`
+
+// viewerParam es el equipo de quien mira como parámetro: vacío es NULL, para
+// que la subconsulta del pedido propio no compare contra un uuid inválido.
+func viewerParam(viewerTeamID string) any {
+	if viewerTeamID == "" {
+		return nil
+	}
+	return viewerTeamID
+}
+
+/*
 ListNearby filtra en dos pasos: primero un rectángulo en grados, que es barato y
 usa el índice de (lat, lng), y después la distancia de verdad sobre lo poco que
 sobrevive.
@@ -112,32 +148,15 @@ func (r *FriendlySearchRepository) ListNearby(
 	dLng := radiusKm / (111.0 * math.Max(math.Cos(lat*math.Pi/180), 0.01))
 
 	q := `SELECT * FROM (
-			SELECT` + searchColumns + `,
-				` + haversineKm("v", "$1", "$2") + ` AS distance_km,
-				COALESCE((
-					SELECT fc.id::text FROM friendly_challenges fc
-					WHERE fc.search_id = s.id
-					  AND fc.challenged_team_id = $8
-					  AND fc.status IN ('pending', 'countered')
-					LIMIT 1
-				), '') AS requested_challenge_id
-			` + searchFrom + `
-			WHERE s.status = 'open'
-			  AND s.expires_at > $3
-			  AND v.lat BETWEEN $4 AND $5
-			  AND v.lng BETWEEN $6 AND $7
+			SELECT` + searchColumns + mapColumns + searchFrom + openInBox + `
 		) nearby
 		WHERE distance_km <= $9
 		ORDER BY distance_km, start_at`
 
-	var viewer any
-	if viewerTeamID != "" {
-		viewer = viewerTeamID
-	}
 	rows, err := r.pool.Query(ctx, q,
 		lat, lng, now,
 		lat-dLat, lat+dLat, lng-dLng, lng+dLng,
-		viewer, radiusKm,
+		viewerParam(viewerTeamID), radiusKm,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("friendlySearch.ListNearby: %w", err)
@@ -159,6 +178,54 @@ func (r *FriendlySearchRepository) ListNearby(
 		return nil, fmt.Errorf("friendlySearch.ListNearby: scan: %w", err)
 	}
 	return result, nil
+}
+
+/*
+ListInArea es el listado del mapa que sigue a la cámara: todo lo que cae en el
+rectángulo, sin círculo.
+
+El total sale de `COUNT(*) OVER ()`, que Postgres calcula antes del `LIMIT`, así
+que viaja en la misma consulta. El orden es por cercanía al centro del área
+—basta la distancia en grados, con la longitud corregida por el coseno—: si la
+respuesta se corta, lo que queda afuera es la orilla del mapa.
+*/
+func (r *FriendlySearchRepository) ListInArea(
+	ctx context.Context, area friendly.Area, lat, lng float64, viewerTeamID string, now time.Time,
+) ([]*friendly.Search, int, error) {
+	q := `SELECT` + searchColumns + mapColumns + `,
+			COUNT(*) OVER () AS total
+		` + searchFrom + openInBox + `
+		ORDER BY power(v.lat - $9, 2) + power((v.lng - $10) * cos(radians($9)), 2), s.start_at
+		LIMIT $11`
+
+	centerLat := (area.South + area.North) / 2
+	centerLng := (area.West + area.East) / 2
+	rows, err := r.pool.Query(ctx, q,
+		lat, lng, now,
+		area.South, area.North, area.West, area.East,
+		viewerParam(viewerTeamID), centerLat, centerLng, friendly.MaxAreaResults,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("friendlySearch.ListInArea: %w", err)
+	}
+	defer rows.Close()
+
+	total := 0
+	result, err := collect(rows, func(row pgx.Row) (*friendly.Search, error) {
+		var distance float64
+		var requested string
+		s, err := scanSearch(row, &distance, &requested, &total)
+		if err != nil {
+			return nil, err
+		}
+		s.DistanceKm = &distance
+		s.RequestedChallengeID = requested
+		return s, nil
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("friendlySearch.ListInArea: scan: %w", err)
+	}
+	return result, total, nil
 }
 
 func (r *FriendlySearchRepository) Close(

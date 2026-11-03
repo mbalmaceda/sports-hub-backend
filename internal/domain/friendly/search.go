@@ -28,10 +28,25 @@ const (
 	SearchExpired   SearchStatus = "expired"
 )
 
-// MaxSearchRadiusKm es el tope del radio que acepta el listado. La app ofrece
-// 2, 5 y 10 km; más que eso deja de ser "cerca" y el bounding box empieza a
-// barrer media región.
+// MaxSearchRadiusKm es el tope del radio del listado por círculo, el modo de la
+// 1.0.x (2, 5 y 10 km alrededor del teléfono). La app nueva pide por área
+// (`ListInArea`); este modo queda mientras esa versión siga en Play.
 const MaxSearchRadiusKm = 10.0
+
+/*
+MaxAreaResults es cuántas búsquedas devuelve como mucho el listado por área.
+
+El área no tiene tope de tamaño: alejar el mapa hasta ver Santiago entero no es
+un error, y lo que protege a la base es este `LIMIT`, no un zoom mínimo. Cuando
+se corta, el total va aparte (`X-Total-Count`) y la app dice "N de M", igual
+que Mercado Libre con las propiedades.
+*/
+const MaxAreaResults = 200
+
+// Area es un rectángulo en grados: lo que se ve del mapa (más un margen).
+type Area struct {
+	South, West, North, East float64
+}
 
 /*
 SearchTTL es cuánto vive una búsqueda publicada, contado desde que se crea.
@@ -100,6 +115,16 @@ type SearchRepository interface {
 		por estado: lo vencido no se muestra aunque nadie lo haya barrido.
 	*/
 	ListNearby(ctx context.Context, lat, lng, radiusKm float64, viewerTeamID string, now time.Time) ([]*Search, error)
+	/*
+		ListInArea devuelve las búsquedas abiertas cuya cancha cae dentro de
+		`area`, las más cercanas a su centro primero y como mucho
+		`MaxAreaResults`, junto con cuántas hay en total en el área.
+
+		(`lat`, `lng`) es el teléfono de quien mira y solo llena `DistanceKm`:
+		el orden sale del área, para que si se corta lo que quede afuera sea la
+		orilla y no el medio de la pantalla.
+	*/
+	ListInArea(ctx context.Context, area Area, lat, lng float64, viewerTeamID string, now time.Time) ([]*Search, int, error)
 	/*
 		Close deja la búsqueda en `status` y rechaza los pedidos abiertos, salvo
 		`keepChallengeID` (el aceptado, si lo hay), en una transacción.

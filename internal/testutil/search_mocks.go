@@ -36,6 +36,16 @@ func (m *MockFriendlySearchRepo) ListNearby(
 	return args.Get(0).([]*friendly.Search), args.Error(1)
 }
 
+func (m *MockFriendlySearchRepo) ListInArea(
+	ctx context.Context, area friendly.Area, lat, lng float64, viewerTeamID string, now time.Time,
+) ([]*friendly.Search, int, error) {
+	args := m.Called(ctx, area, lat, lng, viewerTeamID, now)
+	if args.Get(0) == nil {
+		return nil, 0, args.Error(2)
+	}
+	return args.Get(0).([]*friendly.Search), args.Int(1), args.Error(2)
+}
+
 func (m *MockFriendlySearchRepo) Close(
 	ctx context.Context, id string, status friendly.SearchStatus, keepChallengeID string,
 ) ([]*friendly.Challenge, error) {

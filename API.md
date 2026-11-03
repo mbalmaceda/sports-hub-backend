@@ -765,13 +765,23 @@ atrás desde el partido: una publicación para dentro de tres semanas no se qued
 tres semanas en el mapa. El desafío de cada pedido vence a más tardar junto con
 su búsqueda, porque aceptar pasa por cerrarla y una vencida ya no se cierra.
 
-### GET `/friendly-searches?team_id&lat&lng&radius_km`
+### GET `/friendly-searches?team_id&lat&lng&south&west&north&east`
 
-Búsquedas abiertas cuya cancha cae dentro del radio, de la más cercana a la más
-lejana. `radius_km` por defecto 5, tope 10. Exige ser del equipo de `team_id`
-(cualquier rol, sin invitados): con eso se llena `requested_challenge_id`, el
-pedido abierto de ese equipo si ya pidió. Lo vencido (`expires_at`) no aparece
-aunque la barrida no lo haya tocado.
+Búsquedas abiertas cuya cancha cae dentro del rectángulo: es lo que pide el mapa
+a medida que se mueve. Las más cercanas al **centro del área** primero, como
+mucho 200; el total del área viaja en el header `X-Total-Count`, así que
+`X-Total-Count` mayor que el largo del arreglo quiere decir que se cortó. El
+área no tiene tamaño máximo. Las cuatro esquinas son obligatorias juntas, y
+`south < north`, `west < east` (400 si no). `lat`/`lng` son el teléfono de quien
+mira y solo sirven para `distance_km`.
+
+Sin área cae al modo de la 1.0.x, `radius_km`: las que caen dentro del radio, de
+la más cercana a la más lejana, por defecto 5 y tope 10, sin header.
+
+En los dos modos exige ser del equipo de `team_id` (cualquier rol, sin
+invitados): con eso se llena `requested_challenge_id`, el pedido abierto de ese
+equipo si ya pidió. Lo vencido (`expires_at`) no aparece aunque la barrida no lo
+haya tocado.
 
 ```json
 [{
