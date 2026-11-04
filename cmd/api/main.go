@@ -442,15 +442,18 @@ func main() {
 		protected.POST("/team-links/:token/accept", onboardingHandler.AcceptTeamLink)
 	}
 
-	// Admin: hoy, una llave de servicio para cargar el catálogo de canchas con
-	// curl. Sin ADMIN_TOKEN el grupo entero responde 404. Va afuera del grupo
-	// con sesión porque no hay usuario: ver `middleware.AdminToken`.
+	// Admin: una llave de servicio. La usa el panel de zports-web
+	// (zports.cl/admin), que decide en su servidor quién entra y nunca le pasa
+	// la llave al navegador; también sirve con curl. Sin ADMIN_TOKEN el grupo
+	// entero responde 404. Va afuera del grupo con sesión porque no hay
+	// usuario: ver `middleware.AdminToken`.
 	admin := r.Group("/admin", middleware.AdminToken(cfg.AdminToken))
 	{
 		admin.GET("/venues", venueHandler.AdminList)
 		admin.POST("/venues", venueHandler.AdminCreate)
 		admin.PATCH("/venues/:venueId", venueHandler.AdminUpdate)
 		admin.POST("/venues/:venueId/merge", venueHandler.AdminMerge)
+		admin.GET("/venues/:venueId/nearby", venueHandler.AdminNearby)
 	}
 
 	// Servidor explícito en vez de r.Run(): lo que importa son los timeouts, que

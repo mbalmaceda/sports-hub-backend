@@ -839,14 +839,24 @@ verificar con **201**. Limitado a 20 por hora por usuario.
 ### Admin — `X-Admin-Token`
 
 Fuera del grupo con sesión. Lo protege el secreto `ADMIN_TOKEN` (mínimo 32
-caracteres); sin él, todo `/admin` responde **404**. Es una llave de servicio
-para cargar el catálogo con `curl` mientras no exista un admin web.
+caracteres); sin él, todo `/admin` responde **404**. Es una llave de servicio:
+la usa el panel de moderación de `zports-web` (`zports.cl/admin/canchas`), que
+decide en su servidor quién entra y nunca le entrega la llave al navegador.
+También sirve con `curl`.
+
+Una cancha está en uno de tres estados, derivados de `verified` y
+`rejected_at`: **pendiente** (la sugirió un manager y nadie la revisó),
+**verificada** y **rechazada**. Rechazar la saca del catálogo —`GET /venues` no
+la devuelve, `POST /venues` no la reutiliza y publicar una búsqueda con ella da
+400 `venue not available`— pero no la borra: lo publicado ahí se va solo a las
+24 horas, y las competencias conservan su `venue_id`.
 
 | Endpoint | Qué |
 |---|---|
-| `GET /admin/venues?q&verified` | lista, las sin verificar primero |
+| `GET /admin/venues?q&status` | `status` = `pending` \| `verified` \| `rejected` (vacío: todas). Pendientes primero. Cada una trae `open_searches`, `competitions` y `suggested_by`. `verified=true\|false` sigue aceptándose (= `verified` \| `pending`) |
 | `POST /admin/venues` `{name, lat, lng}` | crea una cancha ya verificada |
-| `PATCH /admin/venues/:venueId` `{name?, lat?, lng?, verified?}` | corrige o verifica |
+| `PATCH /admin/venues/:venueId` `{name?, lat?, lng?, verified?, rejected?}` | corrige, verifica (`verified: true`, que también la saca de rechazadas), rechaza (`rejected: true`) o restaura (`rejected: false`). Los dos en true es 400 |
+| `GET /admin/venues/:venueId/nearby` | canchas vivas a menos de 1 km, para elegir en cuál fusionarla |
 | `POST /admin/venues/:venueId/merge` `{into_id}` | mueve todo a `into_id` y borra la de origen (204) |
 
 ## Liquidaciones entre equipos 🔒

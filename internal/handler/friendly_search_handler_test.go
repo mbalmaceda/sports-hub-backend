@@ -216,6 +216,31 @@ func TestPublishSearch_UnknownVenueIsRejected(t *testing.T) {
 	f.sr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 }
 
+// Una app con la lista de canchas abierta desde antes del rechazo todavía la
+// ofrece: publicar ahí tiene que fallar, o el pin rechazado vuelve al mapa.
+func TestPublishSearch_RejectedVenueIsRejected(t *testing.T) {
+	f := newSearchFixture()
+	f.memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
+		Return(managerOf(homeTeam, "user-home"), nil)
+	rejectedAt := time.Now().Add(-time.Hour)
+	f.vr.On("FindByID", mock.Anything, "v-rejected").
+		Return(&venue.Venue{ID: "v-rejected", Name: "Cancha falsa", RejectedAt: &rejectedAt}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	withClaims(c, "user-home")
+	c.Params = gin.Params{{Key: "id", Value: homeTeam}}
+	start := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+	c.Request = httptest.NewRequest(http.MethodPost, "/teams/"+homeTeam+"/friendly-searches",
+		strings.NewReader(`{"sport_id":"football_7","start_at":"`+start+`","venue_id":"v-rejected"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	f.h.Publish(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	f.sr.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+}
+
 func publishSearch(f *searchFixture, startAt time.Time) *httptest.ResponseRecorder {
 	f.memr.On("FindByUserAndTeam", mock.Anything, "user-home", homeTeam).
 		Return(managerOf(homeTeam, "user-home"), nil)

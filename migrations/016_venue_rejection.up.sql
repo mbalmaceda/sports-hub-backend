@@ -1,0 +1,16 @@
+-- ─── Canchas rechazadas ─────────────────────────────────────────────────────
+--
+-- El catálogo lo completan los managers cuando su cancha no está, y eso nace
+-- sin verificar (013). Hasta acá el admin podía verificar, corregir o fusionar,
+-- pero no tenía cómo sacar una sugerencia que no existe: un pin en medio del
+-- mar, un nombre de prueba.
+--
+-- Rechazar no borra. `friendly_searches.venue_id` es NOT NULL, así que una
+-- cancha con algo publicado no se puede borrar, y las competencias guardan su
+-- `venue_id` como historia. Lo que hace es sacarla del catálogo: no aparece en
+-- el buscador ni la devuelve la deduplicación, y no se puede volver a elegir.
+-- Lo ya publicado ahí se va solo, porque una búsqueda vive 24 horas.
+--
+-- Es una fecha y no un booleano porque "cuándo" es lo que se mira al revisar el
+-- rechazo, y restaurar es volverla a NULL.
+ALTER TABLE venues ADD COLUMN rejected_at TIMESTAMPTZ;

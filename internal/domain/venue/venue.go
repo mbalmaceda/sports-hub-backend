@@ -39,11 +39,18 @@ type Venue struct {
 	Lat      float64 `json:"lat"`
 	Lng      float64 `json:"lng"`
 	Verified bool    `json:"verified"`
+	// RejectedAt es cuándo el admin la sacó del catálogo. Nula es viva.
+	RejectedAt *time.Time `json:"rejected_at,omitempty"`
 	// DistanceKm solo viene en las búsquedas con punto de referencia.
 	DistanceKm *float64  `json:"distance_km,omitempty"`
 	CreatedBy  *string   `json:"-"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// IsRejected dice si el admin la sacó del catálogo: no se puede volver a elegir.
+func (v *Venue) IsRejected() bool {
+	return v.RejectedAt != nil
 }
 
 // Validate revisa lo mínimo para que la cancha se pueda dibujar.
@@ -98,19 +105,60 @@ func NameKey(name string) string {
 	return b.String()
 }
 
-// Update son los campos que el admin puede corregir. Nil es "no tocar".
+/*
+Update son los campos que el admin puede corregir. Nil es "no tocar".
+
+`Rejected` en true la saca del catálogo y le quita la verificación; en false la
+restaura. Aprobar (`Verified` en true) también la restaura: una cancha no puede
+estar verificada y rechazada a la vez.
+*/
 type Update struct {
 	Name     *string  `json:"name"`
 	Lat      *float64 `json:"lat"`
 	Lng      *float64 `json:"lng"`
 	Verified *bool    `json:"verified"`
+	Rejected *bool    `json:"rejected"`
+}
+
+// Status es en qué cola del admin está una cancha. Se deriva de `verified` y
+// `rejected_at`: no hay columna propia que pueda discrepar con esas dos.
+type Status string
+
+const (
+	StatusPending  Status = "pending"
+	StatusVerified Status = "verified"
+	StatusRejected Status = "rejected"
+)
+
+// ValidStatus acepta los tres estados y el vacío, que es "todas".
+func ValidStatus(s Status) bool {
+	return s == "" || s == StatusPending || s == StatusVerified || s == StatusRejected
 }
 
 // Filter acota el listado del admin.
 type Filter struct {
-	Query    string
-	Verified *bool
+	Query  string
+	Status Status
 }
+
+/*
+AdminVenue es una cancha con lo que hace falta para decidir sobre ella: cuánto
+se usa y quién la propuso. Una sugerencia con tres partidos abiertos no se
+rechaza igual que una que nadie usó.
+*/
+type AdminVenue struct {
+	Venue
+	// OpenSearches son las búsquedas abiertas y sin vencer en esta cancha.
+	OpenSearches int `json:"open_searches"`
+	// Competitions son las competencias que la eligieron, de cualquier estado.
+	Competitions int `json:"competitions"`
+	// SuggestedBy es el nombre de quien la propuso; vacío si la cargó el admin.
+	SuggestedBy string `json:"suggested_by,omitempty"`
+}
+
+// NearbyRadiusKm es hasta dónde se buscan candidatas para fusionar: un
+// duplicado es un segundo pin sobre el mismo complejo, no el de la otra cuadra.
+const NearbyRadiusKm = 1.0
 
 type Repository interface {
 	FindByID(ctx context.Context, id string) (*Venue, error)
@@ -133,7 +181,10 @@ type Repository interface {
 
 	// ── Admin ──
 
-	List(ctx context.Context, f Filter) ([]*Venue, error)
+	List(ctx context.Context, f Filter) ([]*AdminVenue, error)
+	// Nearby son las canchas vivas a menos de `radiusKm` de `id`, sin ella:
+	// las candidatas para fusionar un duplicado.
+	Nearby(ctx context.Context, id string, radiusKm float64) ([]*Venue, error)
 	Create(ctx context.Context, v *Venue) error
 	Update(ctx context.Context, id string, u Update) (*Venue, error)
 	// Merge mueve todo lo que apuntaba a `fromID` hacia `intoID` y borra la

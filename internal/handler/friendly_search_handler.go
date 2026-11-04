@@ -224,6 +224,12 @@ func (h *FriendlySearchHandler) Publish(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
+	// Una app con la lista de canchas abierta desde antes del rechazo todavía
+	// la ofrece: el pin no puede volver al mapa por ese lado.
+	if v.IsRejected() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "venue not available"})
+		return
+	}
 
 	s := &friendly.Search{
 		TeamID:         teamID,

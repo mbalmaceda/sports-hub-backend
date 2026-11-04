@@ -37,22 +37,30 @@ func haversineKm(alias, latParam, lngParam string) string {
 	)))`, alias, latParam, lngParam)
 }
 
-const venueColumns = `v.id, v.name, v.lat, v.lng, v.verified, v.created_by, v.created_at, v.updated_at`
+const venueColumns = `v.id, v.name, v.lat, v.lng, v.verified, v.created_by, v.created_at, v.updated_at, v.rejected_at`
 
-func scanVenue(row pgx.Row) (*venue.Venue, error) {
+// scanVenue lee `venueColumns` más lo que se agregue al final, por `extra`.
+func scanVenue(row pgx.Row, extra ...any) (*venue.Venue, error) {
 	v := &venue.Venue{}
-	err := row.Scan(&v.ID, &v.Name, &v.Lat, &v.Lng, &v.Verified, &v.CreatedBy, &v.CreatedAt, &v.UpdatedAt)
+	dest := []any{&v.ID, &v.Name, &v.Lat, &v.Lng, &v.Verified, &v.CreatedBy, &v.CreatedAt, &v.UpdatedAt, &v.RejectedAt}
+	err := row.Scan(append(dest, extra...)...)
 	return v, err
 }
 
 func scanVenueWithDistance(row pgx.Row) (*venue.Venue, error) {
-	v := &venue.Venue{}
-	err := row.Scan(
-		&v.ID, &v.Name, &v.Lat, &v.Lng, &v.Verified, &v.CreatedBy, &v.CreatedAt, &v.UpdatedAt,
-		&v.DistanceKm,
-	)
+	var distance *float64
+	v, err := scanVenue(row, &distance)
+	v.DistanceKm = distance
 	return v, err
 }
+
+/*
+alive es el filtro de lo que sigue en el catálogo. Lo usan el buscador y la
+deduplicación: una cancha rechazada no se ofrece, y si alguien vuelve a
+proponer el mismo lugar nace una pendiente nueva —vuelve a la cola— en vez de
+revivir la rechazada sin que nadie la mire.
+*/
+const alive = `v.rejected_at IS NULL`
 
 func (r *VenueRepository) FindByID(ctx context.Context, id string) (*venue.Venue, error) {
 	q := `SELECT ` + venueColumns + ` FROM venues v WHERE v.id = $1`
@@ -83,14 +91,14 @@ func (r *VenueRepository) Search(
 	if lat != nil && lng != nil {
 		q := `SELECT ` + venueColumns + `, ` + haversineKm("v", "$2", "$3") + ` AS distance_km
 			FROM venues v
-			WHERE v.name_key LIKE $1
+			WHERE v.name_key LIKE $1 AND ` + alive + `
 			ORDER BY v.verified DESC, distance_km
 			LIMIT $4`
 		rows, err = r.pool.Query(ctx, q, pattern, *lat, *lng, limit)
 	} else {
 		q := `SELECT ` + venueColumns + `, NULL::double precision AS distance_km
 			FROM venues v
-			WHERE v.name_key LIKE $1
+			WHERE v.name_key LIKE $1 AND ` + alive + `
 			ORDER BY v.verified DESC, v.name
 			LIMIT $2`
 		rows, err = r.pool.Query(ctx, q, pattern, limit)
@@ -121,7 +129,7 @@ func (r *VenueRepository) FindOrCreate(ctx context.Context, v *venue.Venue) (*ve
 
 	q := `SELECT ` + venueColumns + `
 		FROM venues v
-		WHERE v.name_key = $1 AND ` + haversineKm("v", "$2", "$3") + ` <= $4
+		WHERE v.name_key = $1 AND ` + alive + ` AND ` + haversineKm("v", "$2", "$3") + ` <= $4
 		ORDER BY v.verified DESC, ` + haversineKm("v", "$2", "$3") + `
 		LIMIT 1`
 	existing, err := scanVenue(r.pool.QueryRow(ctx, q, key, v.Lat, v.Lng, venue.DedupeRadiusKm))
@@ -138,21 +146,69 @@ func (r *VenueRepository) FindOrCreate(ctx context.Context, v *venue.Venue) (*ve
 	return v, true, nil
 }
 
-func (r *VenueRepository) List(ctx context.Context, f venue.Filter) ([]*venue.Venue, error) {
-	q := `SELECT ` + venueColumns + `
+/*
+List es la cola del admin: cada cancha con cuánto se usa y quién la propuso.
+
+Primero las pendientes, después las verificadas y al final las rechazadas; dentro
+de cada grupo, las más nuevas arriba. Los conteos van en subconsultas y no en un
+JOIN con GROUP BY porque son dos tablas independientes: juntarlas en un JOIN
+multiplicaría una por la otra.
+*/
+func (r *VenueRepository) List(ctx context.Context, f venue.Filter) ([]*venue.AdminVenue, error) {
+	q := `SELECT ` + venueColumns + `,
+			(SELECT COUNT(*) FROM friendly_searches s
+			 WHERE s.venue_id = v.id AND s.status = 'open' AND s.expires_at > now()) AS open_searches,
+			(SELECT COUNT(*) FROM competitions c WHERE c.venue_id = v.id) AS competitions,
+			COALESCE(u.name, '') AS suggested_by
 		FROM venues v
+		LEFT JOIN users u ON u.id = v.created_by
 		WHERE v.name_key LIKE $1
-		  AND ($2::boolean IS NULL OR v.verified = $2)
-		ORDER BY v.verified, v.created_at DESC`
-	rows, err := r.pool.Query(ctx, q, likePattern(venue.NameKey(f.Query)), f.Verified)
+		  AND ($2 = ''
+		    OR ($2 = 'pending'  AND NOT v.verified AND v.rejected_at IS NULL)
+		    OR ($2 = 'verified' AND v.verified AND v.rejected_at IS NULL)
+		    OR ($2 = 'rejected' AND v.rejected_at IS NOT NULL))
+		ORDER BY (v.rejected_at IS NOT NULL), v.verified, v.created_at DESC`
+	rows, err := r.pool.Query(ctx, q, likePattern(venue.NameKey(f.Query)), string(f.Status))
 	if err != nil {
 		return nil, fmt.Errorf("venue.List: %w", err)
 	}
 	defer rows.Close()
 
-	result, err := collect(rows, scanVenue)
+	result, err := collect(rows, func(row pgx.Row) (*venue.AdminVenue, error) {
+		var searches, competitions int
+		var suggestedBy string
+		v, err := scanVenue(row, &searches, &competitions, &suggestedBy)
+		if err != nil {
+			return nil, err
+		}
+		return &venue.AdminVenue{
+			Venue: *v, OpenSearches: searches, Competitions: competitions, SuggestedBy: suggestedBy,
+		}, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("venue.List: scan: %w", err)
+	}
+	return result, nil
+}
+
+// Nearby mide desde la cancha `id` sin pedirle la coordenada a quien llama:
+// así no hay forma de pedir candidatas para un punto que no es el de la cancha.
+func (r *VenueRepository) Nearby(ctx context.Context, id string, radiusKm float64) ([]*venue.Venue, error) {
+	q := `SELECT ` + venueColumns + `, ` + haversineKm("v", "o.lat", "o.lng") + ` AS distance_km
+		FROM venues v, (SELECT lat, lng FROM venues WHERE id = $1) o
+		WHERE v.id <> $1 AND ` + alive + `
+		  AND ` + haversineKm("v", "o.lat", "o.lng") + ` <= $2
+		ORDER BY v.verified DESC, distance_km
+		LIMIT 10`
+	rows, err := r.pool.Query(ctx, q, id, radiusKm)
+	if err != nil {
+		return nil, fmt.Errorf("venue.Nearby: %w", err)
+	}
+	defer rows.Close()
+
+	result, err := collect(rows, scanVenueWithDistance)
+	if err != nil {
+		return nil, fmt.Errorf("venue.Nearby: scan: %w", err)
 	}
 	return result, nil
 }
@@ -185,11 +241,17 @@ func (r *VenueRepository) Update(ctx context.Context, id string, u venue.Update)
 			name_key   = COALESCE($3, v.name_key),
 			lat        = COALESCE($4, v.lat),
 			lng        = COALESCE($5, v.lng),
-			verified   = COALESCE($6, v.verified),
+			-- Rechazar le quita la verificación; aprobar la saca de rechazadas.
+			verified   = CASE WHEN $7::boolean IS TRUE THEN false ELSE COALESCE($6, v.verified) END,
+			rejected_at = CASE
+				WHEN $7::boolean IS TRUE THEN COALESCE(v.rejected_at, now())
+				WHEN $7::boolean IS FALSE OR $6::boolean IS TRUE THEN NULL
+				ELSE v.rejected_at
+			END,
 			updated_at = now()
 		WHERE v.id = $1
 		RETURNING ` + venueColumns
-	v, err := scanVenue(r.pool.QueryRow(ctx, q, id, name, key, u.Lat, u.Lng, u.Verified))
+	v, err := scanVenue(r.pool.QueryRow(ctx, q, id, name, key, u.Lat, u.Lng, u.Verified, u.Rejected))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, venue.ErrNotFound
 	}

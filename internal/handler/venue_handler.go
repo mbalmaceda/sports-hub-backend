@@ -21,9 +21,10 @@ La de la app (`/venues`) busca y sugiere: cualquiera con sesión puede buscar, y
 quien no encuentra su cancha la sugiere con nombre y pin. Lo sugerido nace sin
 verificar y sirve igual.
 
-La del admin (`/admin/venues`) corrige, verifica y fusiona. Hoy la protege un
-token de servicio (`middleware.AdminToken`); cuando exista el admin web va a
-ser un usuario con permiso, y estos handlers no cambian.
+La del admin (`/admin/venues`) verifica, rechaza, corrige y fusiona. La protege
+un token de servicio (`middleware.AdminToken`) y la usa el panel de zports-web,
+que decide quién entra; el día que la decida un usuario con permiso, estos
+handlers no cambian.
 */
 type VenueHandler struct {
 	venues venue.Repository
@@ -96,23 +97,58 @@ func (h *VenueHandler) Suggest(c *gin.Context) {
 
 // ── Admin ──
 
-// AdminList GET /admin/venues?q&verified
+// AdminList GET /admin/venues?q&status
 //
-// Las sin verificar van primero: son lo que hay que revisar.
+// Las pendientes van primero: son lo que hay que revisar.
 func (h *VenueHandler) AdminList(c *gin.Context) {
-	f := venue.Filter{Query: c.Query("q")}
-	if raw := c.Query("verified"); raw != "" {
+	f := venue.Filter{Query: c.Query("q"), Status: venue.Status(c.Query("status"))}
+	// `verified` es el filtro de antes de que hubiera rechazadas: true son las
+	// verificadas y false las pendientes. Se respeta para lo que ya lo usa.
+	if raw := c.Query("verified"); raw != "" && f.Status == "" {
 		verified, err := strconv.ParseBool(raw)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "verified must be true or false"})
 			return
 		}
-		f.Verified = &verified
+		f.Status = venue.StatusPending
+		if verified {
+			f.Status = venue.StatusVerified
+		}
+	}
+	if !venue.ValidStatus(f.Status) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be pending, verified or rejected"})
+		return
 	}
 
 	items, err := h.venues.List(c.Request.Context(), f)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list venues"})
+		return
+	}
+	if items == nil {
+		items = []*venue.AdminVenue{}
+	}
+	c.JSON(http.StatusOK, items)
+}
+
+// AdminNearby GET /admin/venues/:venueId/nearby
+//
+// Las candidatas para fusionar: canchas vivas a menos de `NearbyRadiusKm`.
+func (h *VenueHandler) AdminNearby(c *gin.Context) {
+	ctx := c.Request.Context()
+	current, err := h.venues.FindByID(ctx, c.Param("venueId"))
+	if errors.Is(err, venue.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	items, err := h.venues.Nearby(ctx, current.ID, venue.NearbyRadiusKm)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list nearby venues"})
 		return
 	}
 	if items == nil {
@@ -147,6 +183,11 @@ func (h *VenueHandler) AdminUpdate(c *gin.Context) {
 	var req venue.Update
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Verificada y rechazada a la vez no es un estado: el pedido se contradice.
+	if req.Verified != nil && *req.Verified && req.Rejected != nil && *req.Rejected {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a venue cannot be verified and rejected at once"})
 		return
 	}
 	// Se valida el resultado y no cada campo: mover solo la latitud tiene que

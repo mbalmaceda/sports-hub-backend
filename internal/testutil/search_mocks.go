@@ -90,8 +90,16 @@ func (m *MockVenueRepo) FindOrCreate(ctx context.Context, v *venue.Venue) (*venu
 	return args.Get(0).(*venue.Venue), args.Bool(1), args.Error(2)
 }
 
-func (m *MockVenueRepo) List(ctx context.Context, f venue.Filter) ([]*venue.Venue, error) {
+func (m *MockVenueRepo) List(ctx context.Context, f venue.Filter) ([]*venue.AdminVenue, error) {
 	args := m.Called(ctx, f)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*venue.AdminVenue), args.Error(1)
+}
+
+func (m *MockVenueRepo) Nearby(ctx context.Context, id string, radiusKm float64) ([]*venue.Venue, error) {
+	args := m.Called(ctx, id, radiusKm)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
